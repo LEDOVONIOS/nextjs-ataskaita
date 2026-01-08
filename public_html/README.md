@@ -88,3 +88,70 @@ After confirming the system works:
 - GA4/GSC API calls (planned for later phases)
 - Cron jobs / background workers (everything is manual and immediate)
 
+## Phase 2: GA4 setup (Visitors Overview only)
+
+Phase 2 keeps the Phase 1 structure, but can optionally pull **real GA4 Visitors Overview** data using a **Google Cloud Service Account JSON key**.
+
+### 1) Google Cloud: enable Analytics Data API
+
+- In Google Cloud Console, enable **Google Analytics Data API** for your project.
+
+### 2) Create a Service Account and download JSON
+
+- Create a Service Account in Google Cloud and download its **JSON key**.
+
+### 3) Upload `service-account.json` (NOT publicly accessible)
+
+Upload the JSON key to:
+
+- `public_html/includes/keys/service-account.json`
+
+That folder ships with an `.htaccess` that denies web access. Do **not** upload the key anywhere else (and never commit it to git).
+
+Token caching uses:
+
+- `public_html/includes/cache/` (must be writable by PHP)
+
+### 4) Configure `GOOGLE_SA_KEY_PATH`
+
+Edit:
+
+- `includes/config.php`
+
+Set:
+
+- `GA4_ENABLED` to `true`
+- `GOOGLE_SA_KEY_PATH` to the key location
+
+Defaults already point to:
+
+- `public_html/includes/keys/service-account.json`
+
+### 5) Add the Service Account email to your GA4 property
+
+In Google Analytics (Admin → Property access management):
+
+- Add the **service account email** (`client_email` in the JSON)
+- Grant at least **Viewer** (or Analyst)
+
+### 6) Set `ga4_property_id` per project
+
+In the app:
+
+- Admin → Projects → set **GA4 Property ID** (digits only) for each project
+
+### 7) Generate report
+
+- Admin → Generate (single project) or Generate All
+
+If GA4 fails, the report still generates using mock data and is marked **PARTIAL** with a visible GA4 error message.
+
+### One-time DB migration (adds PARTIAL status)
+
+If you already imported Phase 1 schema, update the `monthly_reports.status` enum to include `PARTIAL`:
+
+```sql
+ALTER TABLE monthly_reports
+  MODIFY status ENUM('READY','PARTIAL','GENERATING','ERROR') NOT NULL DEFAULT 'GENERATING';
+```
+

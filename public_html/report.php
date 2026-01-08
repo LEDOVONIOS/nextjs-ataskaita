@@ -51,7 +51,7 @@ $title = 'Report: ' . (string)$row['project_name'] . ' — ' . $year . '-' . str
 
 render_header($title);
 
-if ($status !== 'READY') {
+if ($status !== 'READY' && $status !== 'PARTIAL') {
     echo '<div class="card"><p>Report status: <strong>' . e($status) . '</strong></p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
     render_footer();
     exit;
@@ -70,25 +70,43 @@ if (!is_array($snapshot)) {
 
 $analytics = (array)($snapshot['analytics'] ?? []);
 $vis = (array)($analytics['visitors_overview'] ?? []);
+$visTotals = isset($vis['totals']) && is_array($vis['totals']) ? (array)$vis['totals'] : $vis;
 $channels = (array)($analytics['traffic_channels'] ?? []);
 $behavior = (array)($analytics['visitor_behavior'] ?? []);
 $sales = $analytics['sales'] ?? null;
 $seo = (array)($analytics['seo_summary'] ?? []);
 $notes = (array)($snapshot['notes'] ?? []);
 $workSummary = (string)($notes['work_summary'] ?? '');
+$errors = (array)($snapshot['errors'] ?? []);
 
 $showSales = ((bool)($snapshot['project']['show_sales_section'] ?? true)) && is_array($sales);
 ?>
+
+<?php if ($status === 'PARTIAL'): ?>
+  <div class="alert alert--warn">
+    <?php
+      $ga4Err = (array)($errors['ga4'] ?? []);
+      $msg = (string)($ga4Err['message'] ?? 'Report is PARTIAL.');
+      echo e($msg);
+    ?>
+    <?php if (!empty($ga4Err['details'])): ?>
+      <details class="muted" style="margin-top:8px">
+        <summary>Details</summary>
+        <pre style="white-space:pre-wrap; margin:8px 0 0"><?php echo e(json_encode($ga4Err['details'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)); ?></pre>
+      </details>
+    <?php endif; ?>
+  </div>
+<?php endif; ?>
 
 <div class="grid-2">
   <div class="card">
     <div class="card__title">Visitors overview</div>
     <div class="kpis">
-      <div class="kpi"><div class="kpi__label">Users</div><div class="kpi__value"><?php echo e((string)($vis['users'] ?? '—')); ?></div></div>
-      <div class="kpi"><div class="kpi__label">New users</div><div class="kpi__value"><?php echo e((string)($vis['new_users'] ?? '—')); ?></div></div>
-      <div class="kpi"><div class="kpi__label">Sessions</div><div class="kpi__value"><?php echo e((string)($vis['sessions'] ?? '—')); ?></div></div>
-      <div class="kpi"><div class="kpi__label">Engagement rate</div><div class="kpi__value"><?php echo e(isset($vis['engagement_rate']) ? (string)(round(((float)$vis['engagement_rate']) * 100, 1)) . '%' : '—'); ?></div></div>
-      <div class="kpi"><div class="kpi__label">Avg engagement</div><div class="kpi__value"><?php echo e(isset($vis['avg_engagement_time_sec']) ? (string)$vis['avg_engagement_time_sec'] . 's' : '—'); ?></div></div>
+      <div class="kpi"><div class="kpi__label">Users</div><div class="kpi__value"><?php echo e((string)($visTotals['users'] ?? '—')); ?></div></div>
+      <div class="kpi"><div class="kpi__label">New users</div><div class="kpi__value"><?php echo e((string)($visTotals['new_users'] ?? '—')); ?></div></div>
+      <div class="kpi"><div class="kpi__label">Sessions</div><div class="kpi__value"><?php echo e((string)($visTotals['sessions'] ?? '—')); ?></div></div>
+      <div class="kpi"><div class="kpi__label">Engagement rate</div><div class="kpi__value"><?php echo e(isset($visTotals['engagement_rate']) ? (string)(round(((float)$visTotals['engagement_rate']) * 100, 1)) . '%' : '—'); ?></div></div>
+      <div class="kpi"><div class="kpi__label">Avg session duration</div><div class="kpi__value"><?php echo e(isset($visTotals['avg_session_duration_sec']) ? (string)$visTotals['avg_session_duration_sec'] . 's' : (isset($visTotals['avg_engagement_time_sec']) ? (string)$visTotals['avg_engagement_time_sec'] . 's' : '—')); ?></div></div>
     </div>
     <canvas id="chartVisitors" height="140"></canvas>
   </div>

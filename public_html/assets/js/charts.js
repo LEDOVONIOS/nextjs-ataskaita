@@ -27,13 +27,49 @@
     var c = ctx('chartVisitors');
     if (!c) return;
     var v = snap.analytics.visitors_overview || {};
+    var totals = v.totals || v;
+    var daily = Array.isArray(v.daily) ? v.daily : [];
+
+    if (daily.length) {
+      new Chart(c, {
+        type: 'line',
+        data: {
+          labels: daily.map(function (x) { return x.date; }),
+          datasets: [{
+            label: 'Users',
+            data: daily.map(function (x) { return x.users || 0; }),
+            borderColor: COLORS[0],
+            backgroundColor: rgba(COLORS[0], 0.15),
+            tension: 0.25,
+            fill: true
+          }, {
+            label: 'Sessions',
+            data: daily.map(function (x) { return x.sessions || 0; }),
+            borderColor: COLORS[1],
+            backgroundColor: rgba(COLORS[1], 0.12),
+            tension: 0.25,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { labels: { color: 'rgba(232,238,252,0.9)' } } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(232,238,252,0.85)' } },
+            x: { grid: { display: false }, ticks: { color: 'rgba(232,238,252,0.65)' } }
+          }
+        }
+      });
+      return;
+    }
+
     new Chart(c, {
       type: 'bar',
       data: {
         labels: ['Users', 'Sessions', 'New users'],
         datasets: [{
           label: 'Count',
-          data: [v.users || 0, v.sessions || 0, v.new_users || 0],
+          data: [totals.users || 0, totals.sessions || 0, totals.new_users || 0],
           backgroundColor: [rgba(COLORS[0], 0.5), rgba(COLORS[1], 0.5), rgba(COLORS[2], 0.5)],
           borderColor: [COLORS[0], COLORS[1], COLORS[2]],
           borderWidth: 1

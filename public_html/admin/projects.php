@@ -7,6 +7,7 @@ require_once __DIR__ . '/../includes/db.php';
 require_once __DIR__ . '/../includes/security.php';
 require_once __DIR__ . '/../includes/csrf.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/google_auth.php';
 require_once __DIR__ . '/../includes/layout.php';
 
 require_admin();
@@ -28,6 +29,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         if ($name === '') {
             flash_set('error', 'Project name is required.');
+            redirect('/admin/projects.php');
+        }
+        if ($ga4 !== '' && preg_match('/^\d+$/', $ga4) !== 1) {
+            flash_set('error', 'GA4 Property ID must be digits only.');
             redirect('/admin/projects.php');
         }
 
@@ -52,6 +57,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if ($id <= 0 || $name === '') {
             flash_set('error', 'Invalid input.');
             redirect('/admin/projects.php');
+        }
+        if ($ga4 !== '' && preg_match('/^\d+$/', $ga4) !== 1) {
+            flash_set('error', 'GA4 Property ID must be digits only.');
+            redirect('/admin/projects.php?action=edit&id=' . $id);
         }
 
         $stmt = $pdo->prepare('UPDATE projects SET name = ?, ga4_property_id = ?, gsc_site_url = ?, show_sales_section = ? WHERE id = ?');
@@ -82,6 +91,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     redirect('/admin/projects.php');
 }
 
+$ga4KeyPath = ga4_resolve_path((string)GOOGLE_SA_KEY_PATH);
+$ga4KeyConfigured = (bool)GA4_ENABLED && $ga4KeyPath !== '' && is_file($ga4KeyPath);
+
 $projects = $pdo->query('SELECT id, name, ga4_property_id, gsc_site_url, show_sales_section, created_at FROM projects ORDER BY created_at DESC')->fetchAll();
 $editProject = null;
 if ($action === 'edit' && $editId > 0) {
@@ -96,6 +108,13 @@ render_header('Admin: Projects');
 <div class="grid-2">
   <div class="card">
     <div class="card__title"><?php echo $editProject ? 'Edit project' : 'Create project'; ?></div>
+    <div class="muted" style="margin-bottom:10px">
+      <?php if ($ga4KeyConfigured): ?>
+        <span class="badge badge--ok">GA4 key configured</span>
+      <?php else: ?>
+        <span class="badge badge--partial">GA4 not configured (using mock)</span>
+      <?php endif; ?>
+    </div>
     <form method="post" action="<?php echo e(url('/admin/projects.php')); ?>">
       <?php echo csrf_input(); ?>
       <input type="hidden" name="op" value="<?php echo e($editProject ? 'update' : 'create'); ?>">
@@ -108,8 +127,9 @@ render_header('Admin: Projects');
         <input name="name" type="text" required value="<?php echo e((string)($editProject['name'] ?? '')); ?>">
       </div>
       <div class="form-row">
-        <label>GA4 Property ID (stored only)</label>
-        <input name="ga4_property_id" type="text" value="<?php echo e((string)($editProject['ga4_property_id'] ?? '')); ?>">
+        <label>GA4 Property ID (digits only)</label>
+        <input name="ga4_property_id" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="123456789" value="<?php echo e((string)($editProject['ga4_property_id'] ?? '')); ?>">
+        <div class="muted">GA4 requires adding the <strong>service account email</strong> to the GA4 property (Viewer/Analyst).</div>
       </div>
       <div class="form-row">
         <label>GSC Site URL (stored only)</label>
