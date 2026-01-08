@@ -5,9 +5,9 @@ declare(strict_types=1);
  * File-based error logger.
  *
  * Format per line:
- * [UTC timestamp] [ERROR] message {json_context}
+ * [UTC timestamp] [LEVEL] message {json_context}
  */
-function log_error(string $message, array $context = []): void
+function _log_line(string $level, string $message, array $context = []): void
 {
     $logFile = __DIR__ . '/../storage/logs/app.log';
     $logDir = dirname($logFile);
@@ -29,7 +29,12 @@ function log_error(string $message, array $context = []): void
         }
     }
 
-    $line = '[' . $timestamp . '] [ERROR] ' . $message . ' ' . $jsonContext . PHP_EOL;
+    $lvl = strtoupper(trim($level));
+    if ($lvl === '') {
+        $lvl = 'INFO';
+    }
+
+    $line = '[' . $timestamp . '] [' . $lvl . '] ' . $message . ' ' . $jsonContext . PHP_EOL;
 
     $ok = false;
     try {
@@ -43,5 +48,20 @@ function log_error(string $message, array $context = []): void
         // Fallback: use PHP's error log if file logging fails.
         error_log(rtrim($line));
     }
+}
+
+function log_info(string $message, array $context = []): void
+{
+    _log_line('INFO', $message, $context);
+}
+
+function log_warn(string $message, array $context = []): void
+{
+    _log_line('WARN', $message, $context);
+}
+
+function log_error(string $message, array $context = []): void
+{
+    _log_line('ERROR', $message, $context);
 }
 
