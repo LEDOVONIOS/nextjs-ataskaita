@@ -54,7 +54,7 @@ function render_header(string $title): void
 function render_footer(): void
 {
     echo '</main>';
-    echo '<footer class="footer"><div class="container footer__inner">Phase 2: GA4 optional (Visitors Overview) + mock for remaining sections.</div></footer>';
+    echo '<footer class="footer"><div class="container footer__inner">Phase 3: Report UI finalized (MOCK data, stable schema for Phase 4).</div></footer>';
     echo '</body></html>';
 }
 

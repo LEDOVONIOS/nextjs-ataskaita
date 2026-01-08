@@ -38,7 +38,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $pid = (int)$project['id'];
         try {
             $snapshot = generate_report_snapshot($pdo, $project, $year, $month);
-            $status = (string)($snapshot['_report_status'] ?? 'READY');
+            $meta = isset($snapshot['meta']) && is_array($snapshot['meta']) ? (array)$snapshot['meta'] : [];
+            $status = (string)($meta['reportStatus'] ?? 'READY');
             upsert_monthly_report($pdo, $pid, $year, $month, $status, $snapshot);
             $ok++;
             $results[] = ['project' => (string)$project['name'], 'status' => $status === 'PARTIAL' ? 'PARTIAL' : 'OK'];
