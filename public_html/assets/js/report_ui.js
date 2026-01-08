@@ -8,6 +8,7 @@
   var showSales = !!project.show_sales_section;
   var allReport = (data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null;
   var seoReport = (data.sections && data.sections.seo_report) ? data.sections.seo_report : null;
+  var ppcReport = (data.sections && data.sections.ppc_report) ? data.sections.ppc_report : null;
   var charts = Object.create(null);
 
   var elVisitsTable = document.getElementById('table-visits');
@@ -19,6 +20,13 @@
   var elSeoBehaviorTable = document.getElementById('table-seo-behavior');
   var elSeoSalesTable = document.getElementById('table-seo-sales');
   var elSeoGoalsTable = document.getElementById('table-seo-goals');
+  var elPpcVisitsTable = document.getElementById('table-ppc-visits');
+  var elPpcCampaignsTable = document.getElementById('table-ppc-campaigns');
+  var elPpcKeywordsTable = document.getElementById('table-ppc-keywords');
+  var elPpcCitiesTable = document.getElementById('table-ppc-cities');
+  var elPpcBehaviorTable = document.getElementById('table-ppc-behavior');
+  var elPpcSalesTable = document.getElementById('table-ppc-sales');
+  var elPpcGoalsTable = document.getElementById('table-ppc-goals');
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -417,6 +425,312 @@
     });
   }
 
+  function renderPpcLineChart() {
+    destroyChart('ppc_visits_line');
+    if (!window.Chart) return;
+    if (!ppcReport || !ppcReport.visits || !ppcReport.visits.timeseries) return;
+    var ts = ppcReport.visits.timeseries;
+    if (!ts || !Array.isArray(ts.labels)) return;
+    var canvas = document.getElementById('chart-ppc-visits-line');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    charts.ppc_visits_line = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: safeArray(ts.labels),
+        datasets: [
+          {
+            label: (data.period && data.period.label) ? data.period.label : 'This month',
+            data: safeArray(ts.this),
+            borderColor: '#4f8cff',
+            backgroundColor: 'rgba(79,140,255,.10)',
+            tension: 0.25,
+            fill: false
+          },
+          {
+            label: (data.period && data.period.compare_to && data.period.compare_to.label) ? data.period.compare_to.label : 'Last year',
+            data: safeArray(ts.last),
+            borderColor: '#6ee7ff',
+            backgroundColor: 'rgba(110,231,255,.10)',
+            tension: 0.25,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: 'rgba(232,238,252,0.9)' } },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Lankytojų skaičius (vnt.)',
+              color: 'rgba(232,238,252,0.75)',
+              font: { weight: '700' }
+            },
+            grid: { color: 'rgba(255,255,255,0.06)' },
+            ticks: { color: 'rgba(232,238,252,0.85)' }
+          },
+          x: {
+            grid: { display: false },
+            ticks: { color: 'rgba(232,238,252,0.65)' }
+          }
+        }
+      }
+    });
+  }
+
+  function ppcItems(path) {
+    if (!ppcReport) return [];
+    var obj = ppcReport[path];
+    if (!obj || !obj.items) return [];
+    return safeArray(obj.items);
+  }
+
+  function buildPpcVisitsTable() {
+    if (!elPpcVisitsTable) return;
+    var items = ppcItems('campaigns');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Paspaudimai (vnt.)',
+      'Parodymai (vnt.)',
+      'Išlaidos (EUR)',
+      'Vidutinė paspaudimo kaina (EUR)',
+      'Lankytojų skaičius',
+      'Apsilankymų kiekis',
+      'Paspaudimų rodiklis (CTR %)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        rows.push(lineRow(it.campaign != null ? String(it.campaign) : '—', [
+          esc(fmtNumber(it.clicks, 0)),
+          esc(fmtNumber(it.impressions, 0)),
+          esc(fmtNumber(it.cost_eur, 2)),
+          esc(fmtNumber(it.avg_cpc_eur, 2)),
+          esc(fmtNumber(it.users, 0)),
+          esc(fmtNumber(it.sessions, 0)),
+          esc(fmtPctRate(it.ctr_rate))
+        ], false));
+      }
+    }
+
+    elPpcVisitsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcCampaignsTable() {
+    if (!elPpcCampaignsTable) return;
+    var items = ppcItems('campaigns');
+
+    var headers = [
+      'Kampanija',
+      'Parodymai',
+      'Paspaudimai',
+      'Išlaidos',
+      'Konversijos',
+      'CTR (%)',
+      'Įsitraukimas (%)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        rows.push(lineRow(it.campaign != null ? String(it.campaign) : '—', [
+          esc(fmtNumber(it.impressions, 0)),
+          esc(fmtNumber(it.clicks, 0)),
+          esc(fmtNumber(it.cost_eur, 2)),
+          esc(fmtNumber(it.conversions, 0)),
+          esc(fmtPctRate(it.ctr_rate)),
+          esc(fmtPctRate(it.engagement_rate))
+        ], false));
+      }
+    }
+
+    elPpcCampaignsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcKeywordsTable() {
+    if (!elPpcKeywordsTable) return;
+    var items = ppcItems('keywords');
+
+    var headers = [
+      'Raktažodis',
+      'Parodymai',
+      'Paspaudimai',
+      'Išlaidos',
+      'Konversijos',
+      'CTR (%)',
+      'Įsitraukimas (%)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        rows.push(lineRow(it.keyword != null ? String(it.keyword) : '—', [
+          esc(fmtNumber(it.impressions, 0)),
+          esc(fmtNumber(it.clicks, 0)),
+          esc(fmtNumber(it.cost_eur, 2)),
+          esc(fmtNumber(it.conversions, 0)),
+          esc(fmtPctRate(it.ctr_rate)),
+          esc(fmtPctRate(it.engagement_rate))
+        ], false));
+      }
+    }
+
+    elPpcKeywordsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcCitiesTable() {
+    if (!elPpcCitiesTable) return;
+    var items = ppcItems('cities');
+
+    var headers = [
+      'Miestas',
+      'Parodymai',
+      'Paspaudimai',
+      'Išlaidos',
+      'Konversijos',
+      'CTR (%)',
+      'Įsitraukimas (%)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        rows.push(lineRow(it.city != null ? String(it.city) : '—', [
+          esc(fmtNumber(it.impressions, 0)),
+          esc(fmtNumber(it.clicks, 0)),
+          esc(fmtNumber(it.cost_eur, 2)),
+          esc(fmtNumber(it.conversions, 0)),
+          esc(fmtPctRate(it.ctr_rate)),
+          esc(fmtPctRate(it.engagement_rate))
+        ], false));
+      }
+    }
+
+    elPpcCitiesTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcBehaviorTable() {
+    if (!elPpcBehaviorTable) return;
+    var items = ppcItems('keywords');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Įsitraukimo rodiklis (%)',
+      'Puslapiai per apsilankymą',
+      'Vidutinė apsilankymo trukmė'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        rows.push(lineRow(it.keyword != null ? String(it.keyword) : '—', [
+          esc(fmtPctRate(it.engagement_rate)),
+          esc(fmtNumber(it.pages_per_session, 1)),
+          esc(fmtMinutesFromSeconds(it.avg_session_duration_sec))
+        ], false));
+      }
+    }
+
+    elPpcBehaviorTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcSalesTable() {
+    if (!elPpcSalesTable) return;
+    if (!showSales) return;
+    var items = ppcItems('keywords');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Pardavimai (%)',
+      'Pardavimų kiekis (vnt.)',
+      'Gauti pinigai (EUR)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        var sess = Number(it.sessions);
+        var purchases = (it.purchases == null) ? null : Number(it.purchases);
+        var revenue = (it.revenue_eur == null) ? null : Number(it.revenue_eur);
+        if (!isFinite(sess)) sess = 0;
+        if (purchases != null && !isFinite(purchases)) purchases = null;
+        if (revenue != null && !isFinite(revenue)) revenue = null;
+        var rate = (purchases == null || sess <= 0) ? null : (purchases / sess);
+
+        rows.push(lineRow(it.keyword != null ? String(it.keyword) : '—', [
+          esc(rate == null ? '—' : fmtPctRate(rate)),
+          esc(purchases == null ? '—' : fmtNumber(purchases, 0)),
+          esc(revenue == null ? '—' : fmtNumber(revenue, 2))
+        ], false));
+      }
+    }
+
+    elPpcSalesTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildPpcGoalsTable() {
+    if (!elPpcGoalsTable) return;
+    var g = ppcReport && ppcReport.goals ? ppcReport.goals : {};
+    var excluded = safeArray(g.excluded_events || []);
+    var items = safeArray(g.items || []).filter(function (it) {
+      var name = it && it.goal != null ? String(it.goal) : '';
+      return name !== '' && !isExcludedGoal(name, excluded);
+    });
+
+    var headers = [
+      'Raktažodis',
+      'Tikslas',
+      'Įvykdymų skaičius',
+      'Konversijos (%)'
+    ];
+
+    var rows = [];
+    if (!items.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        var kw = it.keyword != null ? String(it.keyword) : '—';
+        var goal = it.goal != null ? String(it.goal) : '—';
+        rows.push(lineRow(kw, [
+          esc(goal),
+          esc(fmtNumber(it.count, 0)),
+          esc(fmtPctRate(it.conversion_rate))
+        ], false));
+      }
+    }
+
+    elPpcGoalsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
   function renderDoughnut(id, items) {
     destroyChart(id);
     if (!window.Chart) return;
@@ -751,6 +1065,15 @@
   renderSeoCharts();
   setupSeoSendButton();
   setupQuickScroll();
+
+  buildPpcVisitsTable();
+  buildPpcCampaignsTable();
+  buildPpcKeywordsTable();
+  buildPpcCitiesTable();
+  buildPpcBehaviorTable();
+  buildPpcSalesTable();
+  buildPpcGoalsTable();
+  renderPpcLineChart();
 
   if (window.location.hash) {
     setTimeout(function () { scrollToHash(window.location.hash); }, 50);

@@ -429,6 +429,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     // Kept separate from the generic tabs so other sidebar items remain unchanged.
     $allVisitorsExtra = phase3_build_all_visitors_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales);
     $seoReport = phase3_build_seo_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales, $workSummary);
+    $ppcReport = phase3_build_ppc_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales);
 
     return [
         'meta' => $meta,
@@ -438,6 +439,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             'traffic' => $traffic,
             'all_visitors_report' => $allVisitorsExtra,
             'seo_report' => $seoReport,
+            'ppc_report' => $ppcReport,
         ],
         'notes' => [
             'work_summary' => $workSummary,
@@ -967,6 +969,208 @@ function phase3_build_seo_report(
             'age' => $mkDist(['18–24', '25–34', '35–44', '45–54', '55–64', '65+', 'Nežinoma']),
             'gender' => $mkDist(['Vyrai', 'Moterys', 'Nežinoma']),
             'cities' => $mkDist(['Vilnius', 'Kaunas', 'Klaipėda', 'Šiauliai', 'Panevėžys', 'Kita']),
+        ],
+    ];
+}
+
+function phase3_build_ppc_report(
+    int $projectId,
+    int $year,
+    int $month,
+    array $thisMonth,
+    array $lastYear,
+    bool $includeSales
+): array {
+    $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|ppc_report')) & 0xFFFFFFFF;
+    $seedLast = (mock_seed_for_period($projectId, $year - 1, $month) ^ crc32('p3|ppc_report')) & 0xFFFFFFFF;
+    $rngThis = new DeterministicRng((int)$seedThis);
+    $rngLast = new DeterministicRng((int)$seedLast);
+
+    $mulThis = phase3_preset_multiplier($projectId, $year, $month, 'paid_search');
+    $mulLast = phase3_preset_multiplier($projectId, $year - 1, $month, 'paid_search');
+
+    $vThis = (array)($thisMonth['visitors_overview'] ?? []);
+    $vLast = (array)($lastYear['visitors_overview'] ?? []);
+
+    $usersThis = (int)max(0, round(phase3_safe_int($vThis['users'] ?? 0, 0) * $mulThis));
+    $usersLast = (int)max(0, round(phase3_safe_int($vLast['users'] ?? 0, max(0, (int)round($usersThis / 1.12))) * $mulLast));
+
+    // Campaigns (Google Ads / Paid Search mock).
+    $campaignCount = (int)max(2, round($rngThis->float(4, 9)));
+    $campaigns = [];
+    $sumUsersThis = 0;
+    $sumUsersLast = 0;
+    for ($i = 0; $i < $campaignCount; $i++) {
+        $name = 'Kampanija ' . ($i + 1);
+
+        $impT = (int)max(0, round($rngThis->float(2500, 42000) * (0.75 + 0.9 * $mulThis)));
+        $ctrT = $rngThis->float(0.015, 0.085);
+        $clkT = (int)max(0, min($impT, round($impT * $ctrT)));
+        $cpcT = $rngThis->float(0.18, 1.65);
+        $costT = round($clkT * $cpcT, 2);
+        $sessT = (int)max(0, round($clkT * $rngThis->float(0.68, 0.98)));
+        $usrT = (int)max(0, min($sessT, round($sessT * $rngThis->float(0.72, 0.96))));
+        $convT = (int)max(0, min($clkT, round($sessT * $rngThis->float(0.006, 0.055))));
+        $engT = max(0.0, min(1.0, $rngThis->float(0.22, 0.74)));
+
+        $impL = (int)max(0, round($rngLast->float(2500, 42000) * (0.75 + 0.9 * $mulLast)));
+        $ctrL = $rngLast->float(0.015, 0.085);
+        $clkL = (int)max(0, min($impL, round($impL * $ctrL)));
+        $cpcL = $rngLast->float(0.18, 1.65);
+        $costL = round($clkL * $cpcL, 2);
+        $sessL = (int)max(0, round($clkL * $rngLast->float(0.68, 0.98)));
+        $usrL = (int)max(0, min($sessL, round($sessL * $rngLast->float(0.72, 0.96))));
+        $convL = (int)max(0, min($clkL, round($sessL * $rngLast->float(0.006, 0.055))));
+        $engL = max(0.0, min(1.0, $rngLast->float(0.22, 0.74)));
+
+        $sumUsersThis += $usrT;
+        $sumUsersLast += $usrL;
+
+        $campaigns[] = [
+            'campaign' => $name,
+            'impressions' => $impT,
+            'clicks' => $clkT,
+            'cost_eur' => $costT,
+            'conversions' => $convT,
+            'ctr_rate' => ($impT > 0) ? round($clkT / $impT, 6) : 0.0,
+            'avg_cpc_eur' => ($clkT > 0) ? round($costT / $clkT, 4) : null,
+            'engagement_rate' => round($engT, 6),
+            'users' => $usrT,
+            'sessions' => $sessT,
+            // last-year fields (used in optional comparisons or future UI).
+            'last_impressions' => $impL,
+            'last_clicks' => $clkL,
+            'last_cost_eur' => $costL,
+            'last_conversions' => $convL,
+            'last_ctr_rate' => ($impL > 0) ? round($clkL / $impL, 6) : 0.0,
+            'last_avg_cpc_eur' => ($clkL > 0) ? round($costL / $clkL, 4) : null,
+            'last_engagement_rate' => round($engL, 6),
+            'last_users' => $usrL,
+            'last_sessions' => $sessL,
+        ];
+    }
+
+    // Timeseries for PPC visits chart (users). If we have campaign user totals, prefer them; otherwise fall back to paid_search preset.
+    $baseThisUsers = $sumUsersThis > 0 ? (float)$sumUsersThis : (float)$usersThis;
+    $baseLastUsers = $sumUsersLast > 0 ? (float)$sumUsersLast : (float)$usersLast;
+    $visitsTimeseries = phase3_build_timeseries($projectId, $year, $month, 'paid_search', 'ppc_visits', $baseThisUsers, $baseLastUsers);
+
+    // Keywords (Paid Search).
+    $kwCount = (int)max(6, round($rngThis->float(10, 22)));
+    $keywords = [];
+    for ($i = 0; $i < $kwCount; $i++) {
+        $kw = 'Raktažodis ' . ($i + 1);
+        $impT = (int)max(0, round($rngThis->float(450, 12500) * (0.75 + 0.9 * $mulThis)));
+        $ctrT = $rngThis->float(0.012, 0.11);
+        $clkT = (int)max(0, min($impT, round($impT * $ctrT)));
+        $cpcT = $rngThis->float(0.12, 2.20);
+        $costT = round($clkT * $cpcT, 2);
+        $sessT = (int)max(0, round($clkT * $rngThis->float(0.70, 0.99)));
+        $usrT = (int)max(0, min($sessT, round($sessT * $rngThis->float(0.70, 0.96))));
+        $convT = (int)max(0, min($clkT, round($sessT * $rngThis->float(0.004, 0.060))));
+        $engT = max(0.0, min(1.0, $rngThis->float(0.20, 0.78)));
+        $ppsT = round(max(0.8, min(7.0, $rngThis->float(1.2, 4.8))), 2);
+        $durT = (int)max(20, min(1200, (int)round($rngThis->float(55, 360))));
+
+        $purchaseT = $includeSales ? (int)max(0, min($convT, round($sessT * $rngThis->float(0.000, 0.020)))) : null;
+        $revT = ($includeSales && $purchaseT !== null)
+            ? round($purchaseT * $rngThis->float(18, 160), 2)
+            : null;
+
+        $keywords[] = [
+            'keyword' => $kw,
+            'impressions' => $impT,
+            'clicks' => $clkT,
+            'cost_eur' => $costT,
+            'conversions' => $convT,
+            'ctr_rate' => ($impT > 0) ? round($clkT / $impT, 6) : 0.0,
+            'engagement_rate' => round($engT, 6),
+            'users' => $usrT,
+            'sessions' => $sessT,
+            'pages_per_session' => $ppsT,
+            'avg_session_duration_sec' => $durT,
+            'purchases' => $purchaseT,
+            'revenue_eur' => $revT,
+        ];
+    }
+
+    // Cities (Paid Search).
+    $cityLabels = ['Vilnius', 'Kaunas', 'Klaipėda', 'Šiauliai', 'Panevėžys', 'Alytus', 'Marijampolė', 'Kita'];
+    $cityCount = (int)max(4, min(count($cityLabels), round($rngThis->float(6, 9))));
+    $cities = [];
+    for ($i = 0; $i < $cityCount; $i++) {
+        $city = $cityLabels[$i];
+        $impT = (int)max(0, round($rngThis->float(900, 22000) * (0.75 + 0.9 * $mulThis)));
+        $ctrT = $rngThis->float(0.010, 0.095);
+        $clkT = (int)max(0, min($impT, round($impT * $ctrT)));
+        $costT = round($clkT * $rngThis->float(0.14, 1.85), 2);
+        $convT = (int)max(0, min($clkT, round($clkT * $rngThis->float(0.01, 0.10))));
+        $engT = max(0.0, min(1.0, $rngThis->float(0.18, 0.76)));
+        $cities[] = [
+            'city' => $city,
+            'impressions' => $impT,
+            'clicks' => $clkT,
+            'cost_eur' => $costT,
+            'conversions' => $convT,
+            'ctr_rate' => ($impT > 0) ? round($clkT / $impT, 6) : 0.0,
+            'engagement_rate' => round($engT, 6),
+        ];
+    }
+
+    // Goals (PPC): keyword + goal rows, exclude GA boilerplate events.
+    $excluded = ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+    $goalCandidates = ['purchase', 'generate_lead', 'sign_up', 'contact_form_submit', 'begin_checkout'];
+    $goalNames = [];
+    foreach ($goalCandidates as $g) {
+        if (!in_array($g, $excluded, true)) {
+            $goalNames[] = $g;
+        }
+    }
+    $goalNames = array_slice($goalNames, 0, 5);
+
+    $goalRows = [];
+    foreach ($keywords as $kwRow) {
+        $kw = (string)($kwRow['keyword'] ?? '—');
+        $sess = (int)($kwRow['sessions'] ?? 0);
+        foreach ($goalNames as $g) {
+            // Deterministic-ish per keyword + goal using base rng + crc.
+            $seed = ($seedThis ^ crc32('ppc_goal|' . $kw . '|' . $g)) & 0xFFFFFFFF;
+            $r = new DeterministicRng((int)$seed);
+            $rate = match ($g) {
+                'purchase' => $r->float(0.000, 0.020),
+                'begin_checkout' => $r->float(0.001, 0.035),
+                'generate_lead' => $r->float(0.002, 0.045),
+                'contact_form_submit' => $r->float(0.001, 0.030),
+                'sign_up' => $r->float(0.001, 0.028),
+                default => $r->float(0.001, 0.020),
+            };
+            $cnt = (int)max(0, round($sess * $rate));
+            $goalRows[] = [
+                'keyword' => $kw,
+                'goal' => $g,
+                'count' => $cnt,
+                'conversion_rate' => ($sess > 0) ? round($cnt / $sess, 6) : 0.0,
+            ];
+        }
+    }
+
+    return [
+        'work_summary' => '',
+        'visits' => [
+            'timeseries' => $visitsTimeseries,
+        ],
+        'campaigns' => [
+            'items' => $campaigns,
+        ],
+        'keywords' => [
+            'items' => $keywords,
+        ],
+        'cities' => [
+            'items' => $cities,
+        ],
+        'goals' => [
+            'excluded_events' => $excluded,
+            'items' => $goalRows,
         ],
     ];
 }

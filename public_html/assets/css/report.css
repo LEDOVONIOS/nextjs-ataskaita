@@ -283,6 +283,17 @@
   color: rgba(232,238,252,.90);
 }
 
+.report3__notice{
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(251,191,36,.25);
+  background: rgba(251,191,36,.06);
+  color: rgba(232,238,252,.90);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .report3__inlineNote{
   font-size: 12px;
 }
