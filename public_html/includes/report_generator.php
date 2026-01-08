@@ -428,6 +428,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     // Phase 3 (Phase 3.1) extra payload for ONE sidebar item: "Visų tinklalapio lankytojų ataskaita" (preset "all").
     // Kept separate from the generic tabs so other sidebar items remain unchanged.
     $allVisitorsExtra = phase3_build_all_visitors_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales);
+    $seoReport = phase3_build_seo_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales, $workSummary);
 
     return [
         'meta' => $meta,
@@ -436,6 +437,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         'sections' => [
             'traffic' => $traffic,
             'all_visitors_report' => $allVisitorsExtra,
+            'seo_report' => $seoReport,
         ],
         'notes' => [
             'work_summary' => $workSummary,
@@ -780,6 +782,192 @@ function phase3_build_all_visitors_report(
             'by_source' => $goalsBySource,
         ],
         'demographics' => $demographics,
+    ];
+}
+
+function phase3_build_seo_report(
+    int $projectId,
+    int $year,
+    int $month,
+    array $thisMonth,
+    array $lastYear,
+    bool $includeSales,
+    string $workSummary
+): array {
+    // Deterministic per period, SEO-only snapshot (no traffic sources).
+    $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|seo_report')) & 0xFFFFFFFF;
+    $seedLast = (mock_seed_for_period($projectId, $year - 1, $month) ^ crc32('p3|seo_report')) & 0xFFFFFFFF;
+    $rngThis = new DeterministicRng((int)$seedThis);
+    $rngLast = new DeterministicRng((int)$seedLast);
+
+    $mulThis = phase3_preset_multiplier($projectId, $year, $month, 'organic_search');
+    $mulLast = phase3_preset_multiplier($projectId, $year - 1, $month, 'organic_search');
+
+    $vThis = (array)($thisMonth['visitors_overview'] ?? []);
+    $vLast = (array)($lastYear['visitors_overview'] ?? []);
+    $bThis = (array)($thisMonth['visitor_behavior'] ?? []);
+    $bLast = (array)($lastYear['visitor_behavior'] ?? []);
+
+    $usersThis = (int)round(phase3_safe_int($vThis['users'] ?? 0, 0) * $mulThis);
+    $usersLast = (int)round(phase3_safe_int($vLast['users'] ?? 0, max(0, (int)round($usersThis / 1.12))) * $mulLast);
+    $sessThis = (int)round(phase3_safe_int($vThis['sessions'] ?? 0, 0) * $mulThis * 1.02);
+    $sessLast = (int)round(phase3_safe_int($vLast['sessions'] ?? 0, max(0, (int)round($sessThis / 1.12))) * $mulLast * 1.02);
+
+    // GSC metrics (mock)
+    $impThis = (int)max(0, round($sessThis * $rngThis->float(12.0, 34.0)));
+    $impLast = (int)max(0, round($sessLast * $rngLast->float(12.0, 34.0)));
+    $ctrThis = $rngThis->float(0.028, 0.085);
+    $ctrLast = $rngLast->float(0.028, 0.085);
+    $clickThis = (int)max(0, round($impThis * $ctrThis));
+    $clickLast = (int)max(0, round($impLast * $ctrLast));
+
+    $top5This = (int)max(0, round($rngThis->float(6, 45) * (0.85 + 0.5 * $mulThis)));
+    $top5Last = (int)max(0, round($rngLast->float(6, 45) * (0.85 + 0.5 * $mulLast)));
+    $top10This = $top5This + (int)max(0, round($rngThis->float(5, 40)));
+    $top10Last = $top5Last + (int)max(0, round($rngLast->float(5, 40)));
+    $top30This = $top10This + (int)max(0, round($rngThis->float(20, 160)));
+    $top30Last = $top10Last + (int)max(0, round($rngLast->float(20, 160)));
+
+    $idxThis = (int)max(0, round($rngThis->float(80, 1200) * (0.65 + 0.7 * $mulThis)));
+    $idxLast = (int)max(0, round($rngLast->float(80, 1200) * (0.65 + 0.7 * $mulLast)));
+
+    // SEO behavior (mock)
+    $engThis = phase3_safe_float($vThis['engagement_rate'] ?? 0.0, 0.58);
+    $engLast = phase3_safe_float($vLast['engagement_rate'] ?? 0.0, max(0.0, min(1.0, $engThis - 0.04)));
+    // Slight "SEO" uplift in engagement.
+    $engThis = max(0.0, min(1.0, $engThis + 0.03));
+    $engLast = max(0.0, min(1.0, $engLast + 0.02));
+    $ppsThis = phase3_safe_float($bThis['pages_per_session'] ?? 0.0, 2.3) * (0.95 + 0.18 * $mulThis);
+    $ppsLast = phase3_safe_float($bLast['pages_per_session'] ?? 0.0, 2.2) * (0.95 + 0.18 * $mulLast);
+    $durThis = (int)round(phase3_safe_int($bThis['avg_session_duration_sec'] ?? 0, 150) * (0.94 + 0.22 * $mulThis));
+    $durLast = (int)round(phase3_safe_int($bLast['avg_session_duration_sec'] ?? 0, 145) * (0.94 + 0.22 * $mulLast));
+
+    // SEO sales (mock). If sales are disabled for the project, keep null placeholders.
+    $salesThis = ['conversion_rate' => null, 'transactions' => null, 'revenue' => null];
+    $salesLast = ['conversion_rate' => null, 'transactions' => null, 'revenue' => null];
+    if ($includeSales) {
+        $sThis = is_array($thisMonth['sales'] ?? null) ? (array)$thisMonth['sales'] : [];
+        $sLast = is_array($lastYear['sales'] ?? null) ? (array)$lastYear['sales'] : [];
+        $txnThis = (int)round(phase3_safe_int($sThis['transactions'] ?? 0, 0) * $mulThis);
+        $txnLast = (int)round(phase3_safe_int($sLast['transactions'] ?? 0, max(0, (int)round($txnThis / 1.10))) * $mulLast);
+        $revThis = (float)phase3_safe_float($sThis['revenue'] ?? 0.0, 0.0) * $mulThis;
+        $revLast = (float)phase3_safe_float($sLast['revenue'] ?? 0.0, max(0.0, $revThis / 1.10)) * $mulLast;
+        $salesThis = [
+            'conversion_rate' => $sessThis > 0 ? round($txnThis / $sessThis, 4) : 0.0,
+            'transactions' => $txnThis,
+            'revenue' => round($revThis, 2),
+        ];
+        $salesLast = [
+            'conversion_rate' => $sessLast > 0 ? round($txnLast / $sessLast, 4) : 0.0,
+            'transactions' => $txnLast,
+            'revenue' => round($revLast, 2),
+        ];
+    }
+
+    // SEO goals (mock conversions), exclude GA/GTM boilerplate.
+    $excluded = ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+    $goalCandidates = ['purchase', 'generate_lead', 'sign_up', 'contact_form_submit', 'begin_checkout'];
+    $goalItems = [];
+    foreach ($goalCandidates as $name) {
+        if (in_array($name, $excluded, true)) {
+            continue;
+        }
+        $rateThis = match ($name) {
+            'purchase' => $rngThis->float(0.001, 0.020),
+            'begin_checkout' => $rngThis->float(0.003, 0.040),
+            'generate_lead' => $rngThis->float(0.004, 0.050),
+            'contact_form_submit' => $rngThis->float(0.002, 0.030),
+            'sign_up' => $rngThis->float(0.002, 0.035),
+            default => $rngThis->float(0.002, 0.020),
+        };
+        $rateLast = match ($name) {
+            'purchase' => $rngLast->float(0.001, 0.020),
+            'begin_checkout' => $rngLast->float(0.003, 0.040),
+            'generate_lead' => $rngLast->float(0.004, 0.050),
+            'contact_form_submit' => $rngLast->float(0.002, 0.030),
+            'sign_up' => $rngLast->float(0.002, 0.035),
+            default => $rngLast->float(0.002, 0.020),
+        };
+        $goalItems[] = [
+            'name' => $name,
+            'this' => (int)max(0, round($sessThis * $rateThis)),
+            'last' => (int)max(0, round($sessLast * $rateLast)),
+        ];
+    }
+
+    // Tracked keywords (mock; sorting/pagination are UI-only in this phase).
+    $domain = 'projektas-' . $projectId . '.lt';
+    $kwCount = (int)$rngThis->float(8, 18);
+    $kwItems = [];
+    for ($i = 0; $i < $kwCount; $i++) {
+        $pos = (int)max(1, round($rngThis->float(1, 55)));
+        $delta = (int)round($rngThis->float(-12, 12));
+        $kwItems[] = [
+            'keyword' => 'Raktažodis ' . ($i + 1),
+            'position' => $pos,
+            'delta' => $delta,
+            'domain' => $domain,
+        ];
+    }
+
+    // Bottom charts (single-period snapshot; no YoY).
+    $distSeed = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|seo_charts')) & 0xFFFFFFFF;
+    $distRng = new DeterministicRng((int)$distSeed);
+    $totalDemo = max(1, (int)round($usersThis * 0.55));
+    $mkDist = function (array $labels) use ($distRng, $totalDemo): array {
+        $weights = [];
+        foreach ($labels as $_) {
+            $weights[] = $distRng->float(0.2, 1.2);
+        }
+        $vals = phase3_split_total_by_weights($totalDemo, $weights);
+        $items = [];
+        for ($i = 0; $i < count($labels); $i++) {
+            $items[] = ['label' => (string)$labels[$i], 'value' => (int)($vals[$i] ?? 0)];
+        }
+        return $items;
+    };
+
+    return [
+        'work_summary' => $workSummary,
+        'gsc' => [
+            'clicks' => ['this' => $clickThis, 'last' => $clickLast],
+            'impressions' => ['this' => $impThis, 'last' => $impLast],
+            'top5_keywords' => ['this' => $top5This, 'last' => $top5Last],
+            'top10_keywords' => ['this' => $top10This, 'last' => $top10Last],
+            'top30_keywords' => ['this' => $top30This, 'last' => $top30Last],
+            'indexed_pages' => ['this' => $idxThis, 'last' => $idxLast],
+        ],
+        'keywords' => [
+            'items' => $kwItems,
+        ],
+        'behavior' => [
+            'this' => [
+                'engagement_rate' => round($engThis, 4),
+                'pages_per_session' => round($ppsThis, 2),
+                'avg_session_duration_sec' => (int)$durThis,
+            ],
+            'last' => [
+                'engagement_rate' => round($engLast, 4),
+                'pages_per_session' => round($ppsLast, 2),
+                'avg_session_duration_sec' => (int)$durLast,
+            ],
+        ],
+        'sales' => [
+            'this' => $salesThis,
+            'last' => $salesLast,
+        ],
+        'goals' => [
+            'excluded_events' => $excluded,
+            'seo_sessions_this' => $sessThis,
+            'seo_sessions_last' => $sessLast,
+            'items' => $goalItems,
+        ],
+        'charts' => [
+            'devices' => $mkDist(['Mobilus', 'Stalinis', 'Planšetė']),
+            'age' => $mkDist(['18–24', '25–34', '35–44', '45–54', '55–64', '65+', 'Nežinoma']),
+            'gender' => $mkDist(['Vyrai', 'Moterys', 'Nežinoma']),
+            'cities' => $mkDist(['Vilnius', 'Kaunas', 'Klaipėda', 'Šiauliai', 'Panevėžys', 'Kita']),
+        ],
     ];
 }
 
