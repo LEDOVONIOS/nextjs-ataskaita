@@ -7,14 +7,18 @@
   var project = data.project || {};
   var showSales = !!project.show_sales_section;
   var allReport = (data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null;
+  var seoReport = (data.sections && data.sections.seo_report) ? data.sections.seo_report : null;
   var charts = Object.create(null);
-
-  if (!allReport) return;
 
   var elVisitsTable = document.getElementById('table-visits');
   var elBehaviorTable = document.getElementById('table-behavior');
   var elSalesTable = document.getElementById('table-sales');
   var elGoalsTable = document.getElementById('table-goals');
+  var elSeoGscTable = document.getElementById('table-seo-gsc');
+  var elSeoKeywordsTable = document.getElementById('table-seo-keywords');
+  var elSeoBehaviorTable = document.getElementById('table-seo-behavior');
+  var elSeoSalesTable = document.getElementById('table-seo-sales');
+  var elSeoGoalsTable = document.getElementById('table-seo-goals');
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -119,6 +123,7 @@
   }
 
   function buildVisitsTable() {
+    if (!allReport) return;
     if (!elVisitsTable) return;
 
     var srcs = safeArray(allReport.sources);
@@ -169,6 +174,7 @@
   }
 
   function buildBehaviorTable() {
+    if (!allReport) return;
     if (!elBehaviorTable) return;
 
     var srcs = safeArray(allReport.sources);
@@ -219,6 +225,7 @@
   }
 
   function buildSalesTable() {
+    if (!allReport) return;
     if (!showSales) return;
     if (!elSalesTable) return;
 
@@ -295,6 +302,7 @@
   }
 
   function buildGoalsTable() {
+    if (!allReport) return;
     if (!elGoalsTable) return;
 
     var goals = allReport.goals || {};
@@ -480,11 +488,237 @@
   }
 
   function renderDonuts() {
+    if (!allReport) return;
     var d = allReport.demographics || {};
     renderDoughnut('gender', d.gender);
     renderDoughnut('browsers', d.browsers);
     renderDoughnut('devices', d.devices);
     renderDoughnut('age', d.age);
+  }
+
+  function seoMetric(obj, key) {
+    if (!obj || !key) return {};
+    return (obj && obj[key]) ? obj[key] : {};
+  }
+
+  function buildSeoGscTable() {
+    if (!elSeoGscTable) return;
+    var gsc = seoReport && seoReport.gsc ? seoReport.gsc : {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var rowsDef = [
+      { key: 'clicks', label: 'Paspaudimai', digits: 0 },
+      { key: 'impressions', label: 'Parodymai', digits: 0 },
+      { key: 'top5_keywords', label: 'Raktažodžių kiekis TOP 5', digits: 0 },
+      { key: 'top10_keywords', label: 'Raktažodžių kiekis TOP 10', digits: 0 },
+      { key: 'top30_keywords', label: 'Raktažodžių kiekis TOP 30', digits: 0 },
+      { key: 'indexed_pages', label: 'Indeksuotų puslapių kiekis (Google)', digits: 0 }
+    ];
+
+    var headers = [' ', thisRange, lastRange, 'Pokytis (%)'];
+    var rows = [];
+
+    for (var i = 0; i < rowsDef.length; i++) {
+      var def = rowsDef[i];
+      var m = seoMetric(gsc, def.key);
+      var a = (m && m.this != null) ? m.this : null;
+      var b = (m && m.last != null) ? m.last : null;
+      rows.push(lineRow(def.label, [
+        esc(fmtNumber(a, def.digits)),
+        esc(fmtNumber(b, def.digits)),
+        deltaBadge(a, b)
+      ], false));
+    }
+
+    elSeoGscTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function posDeltaBadge(delta) {
+    var n = Number(delta);
+    if (!isFinite(n)) return '<span class="report3__posDelta report3__posDelta--flat">—</span>';
+    if (Math.abs(n) < 0.0001) return '<span class="report3__posDelta report3__posDelta--flat">0</span>';
+    var cls = n > 0 ? 'report3__posDelta--up' : 'report3__posDelta--down';
+    var sign = n > 0 ? '+' : '−';
+    return '<span class="report3__posDelta ' + cls + '">' + sign + ' ' + esc(fmtNumber(Math.abs(n), 0)) + '</span>';
+  }
+
+  function buildSeoKeywordsTable() {
+    if (!elSeoKeywordsTable) return;
+    var kw = seoReport && seoReport.keywords ? seoReport.keywords : {};
+    var items = safeArray(kw.items);
+
+    var headers = ['Raktažodis', 'Google pozicija', 'Pozicijos pokytis per laikotarpį', 'Domenas'];
+    var thead = '<thead><tr>' +
+      '<th data-sort-key="keyword" aria-sort="none">' + esc(headers[0]) + '</th>' +
+      '<th class="right" data-sort-key="position" aria-sort="none">' + esc(headers[1]) + '</th>' +
+      '<th class="right" data-sort-key="delta" aria-sort="none">' + esc(headers[2]) + '</th>' +
+      '<th data-sort-key="domain" aria-sort="none">' + esc(headers[3]) + '</th>' +
+    '</tr></thead>';
+
+    var bodyRows = [];
+    if (!items.length) {
+      bodyRows.push('<tr><td class="muted">—</td><td class="right muted">—</td><td class="right muted">—</td><td class="muted">—</td></tr>');
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        var keyword = (it.keyword != null) ? String(it.keyword) : '—';
+        var domain = (it.domain != null) ? String(it.domain) : '—';
+        var pos = (it.position != null) ? it.position : null;
+        var delta = (it.delta != null) ? it.delta : null;
+        bodyRows.push(
+          '<tr>' +
+            '<td>' + esc(keyword) + '</td>' +
+            '<td class="right">' + esc(fmtNumber(pos, 0)) + '</td>' +
+            '<td class="right">' + posDeltaBadge(delta) + '</td>' +
+            '<td class="muted">' + esc(domain) + '</td>' +
+          '</tr>'
+        );
+      }
+    }
+
+    elSeoKeywordsTable.innerHTML = thead + '<tbody>' + bodyRows.join('') + '</tbody>';
+  }
+
+  function buildSeoBehaviorTable() {
+    if (!elSeoBehaviorTable) return;
+    var b = seoReport && seoReport.behavior ? seoReport.behavior : {};
+    var t = b.this || {};
+    var l = b.last || {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = [' ', 'Įsitraukimo rodiklis (%)', 'Puslapiai per apsilankymą (vnt.)', 'Vidutinė apsilankymo trukmė (min.)'];
+    var rows = [];
+    rows.push(lineRow('Pokytis', [
+      deltaBadge(t.engagement_rate, l.engagement_rate),
+      deltaBadge(t.pages_per_session, l.pages_per_session),
+      deltaBadge(t.avg_session_duration_sec, l.avg_session_duration_sec)
+    ], true));
+
+    rows.push(lineRow(thisRange, [
+      esc(fmtPctRate(t.engagement_rate)),
+      esc(fmtNumber(t.pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(t.avg_session_duration_sec))
+    ], false));
+
+    rows.push(lineRow(lastRange, [
+      esc(fmtPctRate(l.engagement_rate)),
+      esc(fmtNumber(l.pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(l.avg_session_duration_sec))
+    ], false));
+
+    elSeoBehaviorTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildSeoSalesTable() {
+    if (!elSeoSalesTable) return;
+    var s = seoReport && seoReport.sales ? seoReport.sales : {};
+    var t = s.this || {};
+    var l = s.last || {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = [' ', 'Pardavimai (%)', 'Pardavimų kiekis (vnt.)', 'Gauti pinigai (EUR)'];
+    var rows = [];
+    rows.push(lineRow('Pokytis', [
+      deltaBadge(t.conversion_rate, l.conversion_rate),
+      deltaBadge(t.transactions, l.transactions),
+      deltaBadge(t.revenue, l.revenue)
+    ], true));
+
+    rows.push(lineRow(thisRange, [
+      esc(fmtPctRate(t.conversion_rate)),
+      esc(fmtNumber(t.transactions, 0)),
+      esc(fmtNumber(t.revenue, 0))
+    ], false));
+
+    rows.push(lineRow(lastRange, [
+      esc(fmtPctRate(l.conversion_rate)),
+      esc(fmtNumber(l.transactions, 0)),
+      esc(fmtNumber(l.revenue, 0))
+    ], false));
+
+    elSeoSalesTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function goalCellSeo(count, sessions) {
+    var c = Number(count);
+    var s = Number(sessions);
+    if (!isFinite(c)) c = 0;
+    if (!isFinite(s)) s = 0;
+    var pct = (s > 0) ? (c / s * 100) : null;
+    var pctText = (pct == null) ? '—' : fmtPctNumber(pct);
+    return esc(fmtNumber(c, 0)) + ' <span class="muted">(' + esc(pctText) + ')</span>';
+  }
+
+  function buildSeoGoalsTable() {
+    if (!elSeoGoalsTable) return;
+    var g = seoReport && seoReport.goals ? seoReport.goals : {};
+    var excluded = safeArray(g.excluded_events || []);
+    var items = safeArray(g.items || []).filter(function (it) {
+      var name = it && it.name != null ? String(it.name) : '';
+      return name !== '' && !isExcludedGoal(name, excluded);
+    });
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var sessThis = Number(g.seo_sessions_this);
+    var sessLast = Number(g.seo_sessions_last);
+    if (!isFinite(sessThis)) sessThis = 0;
+    if (!isFinite(sessLast)) sessLast = 0;
+
+    var headers = ['Tikslas', thisRange, lastRange, 'Pokytis'];
+    var rows = [];
+
+    if (!items.length) {
+      rows.push('<tr><td class="muted">—</td><td class="right muted">—</td><td class="right muted">—</td><td class="right muted">—</td></tr>');
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i] || {};
+        var name = it.name != null ? String(it.name) : '—';
+        rows.push(lineRow(name, [
+          goalCellSeo(it.this, sessThis),
+          goalCellSeo(it.last, sessLast),
+          deltaBadge(it.this, it.last)
+        ], false));
+      }
+    }
+
+    elSeoGoalsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function renderSeoCharts() {
+    var c = seoReport && seoReport.charts ? seoReport.charts : {};
+    renderDoughnut('seo-devices', c.devices);
+    renderDoughnut('seo-age', c.age);
+    renderDoughnut('seo-gender', c.gender);
+    renderDoughnut('seo-cities', c.cities);
+  }
+
+  function setupSeoSendButton() {
+    var btn = document.getElementById('btn-send-client');
+    if (!btn) return;
+    var sel = btn.getAttribute('data-requires-nonempty') || '';
+    var input = sel ? document.querySelector(sel) : null;
+    if (!input) return;
+
+    function update() {
+      var v = String(input.value || '').trim();
+      btn.disabled = v === '';
+    }
+    input.addEventListener('input', update);
+    update();
+
+    btn.addEventListener('click', function () {
+      if (btn.disabled) return;
+      // UI-only placeholder; no backend/email logic in this phase.
+      window.alert('Ataskaitos siuntimas bus įgyvendintas vėliau (UI logika).');
+    });
   }
 
   function setupQuickScroll() {
@@ -508,6 +742,14 @@
   buildGoalsTable();
   renderLineChart();
   renderDonuts();
+
+  buildSeoGscTable();
+  buildSeoKeywordsTable();
+  buildSeoBehaviorTable();
+  buildSeoSalesTable();
+  buildSeoGoalsTable();
+  renderSeoCharts();
+  setupSeoSendButton();
   setupQuickScroll();
 
   if (window.location.hash) {

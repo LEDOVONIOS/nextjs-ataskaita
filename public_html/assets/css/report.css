@@ -256,3 +256,69 @@
   color: rgba(232,238,252,.92);
 }
 
+/* SEO report additions */
+.report3__textarea{
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.03);
+  color: rgba(232,238,252,.92);
+  line-height: 1.5;
+}
+.report3__textarea:focus{
+  outline: none;
+  border-color: rgba(79,140,255,.50);
+  box-shadow: 0 0 0 3px rgba(79,140,255,.12);
+}
+
+.report3__notesRead{
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.02);
+  min-height: 120px;
+  color: rgba(232,238,252,.90);
+}
+
+.report3__inlineNote{
+  font-size: 12px;
+}
+
+.report3__tableTools{
+  margin-top: 10px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+  flex-wrap:wrap;
+}
+.report3__pager{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+}
+.report3__pagerHint{
+  font-size: 12px;
+}
+
+.report3__posDelta{
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-end;
+  min-width: 48px;
+  font-weight: 900;
+}
+.report3__posDelta--up{ color: var(--ok); }
+.report3__posDelta--down{ color: var(--danger); }
+.report3__posDelta--flat{ color: var(--muted); }
+
+.table--keywords th{
+  white-space: nowrap;
+}
+.table--keywords td{
+  vertical-align: middle;
+}
+
