@@ -425,17 +425,361 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         ];
     }
 
+    // Phase 3 (Phase 3.1) extra payload for ONE sidebar item: "Visų tinklalapio lankytojų ataskaita" (preset "all").
+    // Kept separate from the generic tabs so other sidebar items remain unchanged.
+    $allVisitorsExtra = phase3_build_all_visitors_report($projectId, $year, $month, $thisMonth, $lastYear, $includeSales);
+
     return [
         'meta' => $meta,
         'project' => $projectInfo,
         'period' => $period,
         'sections' => [
             'traffic' => $traffic,
+            'all_visitors_report' => $allVisitorsExtra,
         ],
         'notes' => [
             'work_summary' => $workSummary,
         ],
         'errors' => [],
+    ];
+}
+
+function phase3_all_visitors_sources(): array
+{
+    // Must match UI row order requirement.
+    return [
+        ['key' => 'seo', 'label' => 'SEO'],
+        ['key' => 'paid_search', 'label' => 'Mokamos reklamos paieškoje'],
+        ['key' => 'direct_unknown', 'label' => 'Tiesiogiai atėję / neatpažinti'],
+        ['key' => 'organic_social', 'label' => 'Natūralus srautas iš socialinių tinklų'],
+        ['key' => 'pmax', 'label' => 'Google Ads Performance Max / Smart Shopping'],
+        ['key' => 'paid_social', 'label' => 'Mokamas socialinių tinklų srautas'],
+        ['key' => 'referral', 'label' => 'Lankytojai iš kitų svetainių'],
+        ['key' => 'email', 'label' => 'Lankytojai iš el. pašto'],
+        ['key' => 'display', 'label' => 'Vaizdinės reklamos srautas'],
+        ['key' => 'unassigned', 'label' => 'Nepriskirtas srautas'],
+    ];
+}
+
+function phase3_split_total_by_weights(int $total, array $weights): array
+{
+    $n = count($weights);
+    if ($n <= 0) {
+        return [];
+    }
+    $sum = 0.0;
+    foreach ($weights as $w) {
+        $sum += max(0.0, (float)$w);
+    }
+    if ($sum <= 0.0) {
+        // Even split
+        $base = (int)floor($total / $n);
+        $out = array_fill(0, $n, $base);
+        $rem = $total - ($base * $n);
+        for ($i = 0; $i < $rem; $i++) {
+            $out[$i] += 1;
+        }
+        return $out;
+    }
+
+    $out = [];
+    $remaining = $total;
+    for ($i = 0; $i < $n; $i++) {
+        $isLast = ($i === $n - 1);
+        if ($isLast) {
+            $out[$i] = $remaining;
+            break;
+        }
+        $share = max(0.0, (float)$weights[$i]) / $sum;
+        $v = (int)floor($total * $share);
+        $v = max(0, min($v, $remaining));
+        $out[$i] = $v;
+        $remaining -= $v;
+    }
+    return $out;
+}
+
+function phase3_build_all_visitors_report(
+    int $projectId,
+    int $year,
+    int $month,
+    array $thisMonth,
+    array $lastYear,
+    bool $includeSales
+): array {
+    $sources = phase3_all_visitors_sources();
+
+    $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|all_visitors_extra')) & 0xFFFFFFFF;
+    $seedLast = (mock_seed_for_period($projectId, $year - 1, $month) ^ crc32('p3|all_visitors_extra')) & 0xFFFFFFFF;
+    $rngThis = new DeterministicRng((int)$seedThis);
+    $rngLast = new DeterministicRng((int)$seedLast);
+
+    $vThis = (array)($thisMonth['visitors_overview'] ?? []);
+    $vLast = (array)($lastYear['visitors_overview'] ?? []);
+
+    $totalUsersThis = phase3_safe_int($vThis['users'] ?? 0, 0);
+    $totalUsersLast = phase3_safe_int($vLast['users'] ?? 0, max(0, (int)round($totalUsersThis / 1.12)));
+    $totalNewThis = phase3_safe_int($vThis['new_users'] ?? 0, 0);
+    $totalNewLast = phase3_safe_int($vLast['new_users'] ?? 0, max(0, (int)round($totalNewThis / 1.12)));
+    $totalSessThis = phase3_safe_int($vThis['sessions'] ?? 0, 0);
+    $totalSessLast = phase3_safe_int($vLast['sessions'] ?? 0, max(0, (int)round($totalSessThis / 1.12)));
+
+    $weightsThis = [];
+    $weightsLast = [];
+    foreach ($sources as $src) {
+        $k = (string)($src['key'] ?? '');
+        // deterministic-ish: each source has its own expected range
+        $weightsThis[] = match ($k) {
+            'seo' => $rngThis->float(0.22, 0.48),
+            'paid_search' => $rngThis->float(0.05, 0.20),
+            'direct_unknown' => $rngThis->float(0.10, 0.25),
+            'organic_social' => $rngThis->float(0.03, 0.10),
+            'pmax' => $rngThis->float(0.02, 0.14),
+            'paid_social' => $rngThis->float(0.02, 0.10),
+            'referral' => $rngThis->float(0.03, 0.12),
+            'email' => $rngThis->float(0.01, 0.06),
+            'display' => $rngThis->float(0.01, 0.08),
+            'unassigned' => $rngThis->float(0.01, 0.07),
+            default => $rngThis->float(0.03, 0.10),
+        };
+        $weightsLast[] = match ($k) {
+            'seo' => $rngLast->float(0.22, 0.48),
+            'paid_search' => $rngLast->float(0.05, 0.20),
+            'direct_unknown' => $rngLast->float(0.10, 0.25),
+            'organic_social' => $rngLast->float(0.03, 0.10),
+            'pmax' => $rngLast->float(0.02, 0.14),
+            'paid_social' => $rngLast->float(0.02, 0.10),
+            'referral' => $rngLast->float(0.03, 0.12),
+            'email' => $rngLast->float(0.01, 0.06),
+            'display' => $rngLast->float(0.01, 0.08),
+            'unassigned' => $rngLast->float(0.01, 0.07),
+            default => $rngLast->float(0.03, 0.10),
+        };
+    }
+
+    $usersThisByIdx = phase3_split_total_by_weights($totalUsersThis, $weightsThis);
+    $usersLastByIdx = phase3_split_total_by_weights($totalUsersLast, $weightsLast);
+    $sessThisByIdx = phase3_split_total_by_weights($totalSessThis, $weightsThis);
+    $sessLastByIdx = phase3_split_total_by_weights($totalSessLast, $weightsLast);
+    // New users mostly follow users distribution.
+    $newThisByIdx = phase3_split_total_by_weights($totalNewThis, $weightsThis);
+    $newLastByIdx = phase3_split_total_by_weights($totalNewLast, $weightsLast);
+
+    $visitsBySource = [];
+    for ($i = 0; $i < count($sources); $i++) {
+        $k = (string)($sources[$i]['key'] ?? (string)$i);
+        $visitsBySource[$k] = [
+            'users' => (int)($usersThisByIdx[$i] ?? 0),
+            'new_users' => (int)($newThisByIdx[$i] ?? 0),
+            'sessions' => (int)($sessThisByIdx[$i] ?? 0),
+            'last_users' => (int)($usersLastByIdx[$i] ?? 0),
+            'last_new_users' => (int)($newLastByIdx[$i] ?? 0),
+            'last_sessions' => (int)($sessLastByIdx[$i] ?? 0),
+        ];
+    }
+
+    // Behavior per source (rates/seconds).
+    $bThis = (array)($thisMonth['visitor_behavior'] ?? []);
+    $bLast = (array)($lastYear['visitor_behavior'] ?? []);
+    $baseEngThis = phase3_safe_float($vThis['engagement_rate'] ?? 0.0, 0.55);
+    $baseEngLast = phase3_safe_float($vLast['engagement_rate'] ?? 0.0, max(0.0, min(1.0, $baseEngThis - 0.04)));
+    $basePpsThis = phase3_safe_float($bThis['pages_per_session'] ?? 0.0, 2.2);
+    $basePpsLast = phase3_safe_float($bLast['pages_per_session'] ?? 0.0, 2.1);
+    $baseDurThis = phase3_safe_int($bThis['avg_session_duration_sec'] ?? 0, 135);
+    $baseDurLast = phase3_safe_int($bLast['avg_session_duration_sec'] ?? 0, 130);
+
+    $behaviorBySource = [];
+    for ($i = 0; $i < count($sources); $i++) {
+        $k = (string)($sources[$i]['key'] ?? (string)$i);
+        $engT = max(0.0, min(1.0, $baseEngThis + $rngThis->float(-0.08, 0.08)));
+        $engL = max(0.0, min(1.0, $baseEngLast + $rngLast->float(-0.08, 0.08)));
+        $ppsT = max(0.8, min(6.5, $basePpsThis + $rngThis->float(-0.7, 0.8)));
+        $ppsL = max(0.8, min(6.5, $basePpsLast + $rngLast->float(-0.7, 0.8)));
+        $durT = (int)max(30, min(900, (int)round($baseDurThis + $rngThis->float(-65, 95))));
+        $durL = (int)max(30, min(900, (int)round($baseDurLast + $rngLast->float(-65, 95))));
+        $behaviorBySource[$k] = [
+            'engagement_rate' => round($engT, 4),
+            'pages_per_session' => round($ppsT, 2),
+            'avg_session_duration_sec' => $durT,
+            'last_engagement_rate' => round($engL, 4),
+            'last_pages_per_session' => round($ppsL, 2),
+            'last_avg_session_duration_sec' => $durL,
+        ];
+    }
+
+    // Sales per source (optional).
+    $salesBySource = [];
+    $salesTotals = [
+        'conversion_rate' => null,
+        'transactions' => null,
+        'revenue' => null,
+        'last_conversion_rate' => null,
+        'last_transactions' => null,
+        'last_revenue' => null,
+    ];
+    if ($includeSales) {
+        $sThis = is_array($thisMonth['sales'] ?? null) ? (array)$thisMonth['sales'] : [];
+        $sLast = is_array($lastYear['sales'] ?? null) ? (array)$lastYear['sales'] : [];
+        $totTxnThis = phase3_safe_int($sThis['transactions'] ?? 0, 0);
+        $totTxnLast = phase3_safe_int($sLast['transactions'] ?? 0, max(0, (int)round($totTxnThis / 1.10)));
+        $totRevThis = (float)phase3_safe_float($sThis['revenue'] ?? 0.0, 0.0);
+        $totRevLast = (float)phase3_safe_float($sLast['revenue'] ?? 0.0, max(0.0, $totRevThis / 1.10));
+
+        $txnThisByIdx = phase3_split_total_by_weights($totTxnThis, $weightsThis);
+        $txnLastByIdx = phase3_split_total_by_weights($totTxnLast, $weightsLast);
+        // Revenue split tends to correlate with transactions, but not identical.
+        $revThisByIdx = phase3_split_total_by_weights((int)round($totRevThis), $weightsThis);
+        $revLastByIdx = phase3_split_total_by_weights((int)round($totRevLast), $weightsLast);
+
+        $sumSessThis = max(0, $totalSessThis);
+        $sumSessLast = max(0, $totalSessLast);
+        $salesTotals['transactions'] = $totTxnThis;
+        $salesTotals['revenue'] = round($totRevThis, 2);
+        $salesTotals['conversion_rate'] = $sumSessThis > 0 ? round($totTxnThis / $sumSessThis, 4) : 0.0;
+        $salesTotals['last_transactions'] = $totTxnLast;
+        $salesTotals['last_revenue'] = round($totRevLast, 2);
+        $salesTotals['last_conversion_rate'] = $sumSessLast > 0 ? round($totTxnLast / $sumSessLast, 4) : 0.0;
+
+        for ($i = 0; $i < count($sources); $i++) {
+            $k = (string)($sources[$i]['key'] ?? (string)$i);
+            $sessT = (int)($sessThisByIdx[$i] ?? 0);
+            $sessL = (int)($sessLastByIdx[$i] ?? 0);
+            $txnT = (int)($txnThisByIdx[$i] ?? 0);
+            $txnL = (int)($txnLastByIdx[$i] ?? 0);
+            $revT = (float)($revThisByIdx[$i] ?? 0);
+            $revL = (float)($revLastByIdx[$i] ?? 0);
+            $salesBySource[$k] = [
+                'conversion_rate' => $sessT > 0 ? round($txnT / $sessT, 4) : 0.0,
+                'transactions' => $txnT,
+                'revenue' => round($revT, 2),
+                'last_conversion_rate' => $sessL > 0 ? round($txnL / $sessL, 4) : 0.0,
+                'last_transactions' => $txnL,
+                'last_revenue' => round($revL, 2),
+            ];
+        }
+    }
+
+    // Goals table columns: only "real" goal-like events; exclude GA/GTM boilerplate.
+    $excluded = ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+    $goalCandidates = ['purchase', 'generate_lead', 'sign_up', 'contact_form_submit', 'begin_checkout'];
+    $goalNames = [];
+    foreach ($goalCandidates as $g) {
+        if (!in_array($g, $excluded, true)) {
+            $goalNames[] = $g;
+        }
+    }
+    // Keep list stable but not overly wide.
+    $goalNames = array_slice($goalNames, 0, 4);
+
+    $goalsBySource = [];
+    $goalsTotalsThis = ['sessions' => $totalSessThis, 'goals' => []];
+    $goalsTotalsLast = ['sessions' => $totalSessLast, 'goals' => []];
+    foreach ($goalNames as $gn) {
+        $goalsTotalsThis['goals'][$gn] = 0;
+        $goalsTotalsLast['goals'][$gn] = 0;
+    }
+
+    for ($i = 0; $i < count($sources); $i++) {
+        $k = (string)($sources[$i]['key'] ?? (string)$i);
+        $sessT = (int)($sessThisByIdx[$i] ?? 0);
+        $sessL = (int)($sessLastByIdx[$i] ?? 0);
+
+        $srcGoalsT = [];
+        $srcGoalsL = [];
+        foreach ($goalNames as $gn) {
+            // Simple deterministic goal rates by goal type.
+            $baseRate = match ($gn) {
+                'purchase' => $rngThis->float(0.001, 0.018),
+                'begin_checkout' => $rngThis->float(0.002, 0.030),
+                'generate_lead' => $rngThis->float(0.003, 0.035),
+                'sign_up' => $rngThis->float(0.002, 0.028),
+                default => $rngThis->float(0.002, 0.020),
+            };
+            $baseRateL = match ($gn) {
+                'purchase' => $rngLast->float(0.001, 0.018),
+                'begin_checkout' => $rngLast->float(0.002, 0.030),
+                'generate_lead' => $rngLast->float(0.003, 0.035),
+                'sign_up' => $rngLast->float(0.002, 0.028),
+                default => $rngLast->float(0.002, 0.020),
+            };
+            $cntT = (int)max(0, round($sessT * $baseRate));
+            $cntL = (int)max(0, round($sessL * $baseRateL));
+            $srcGoalsT[$gn] = $cntT;
+            $srcGoalsL[$gn] = $cntL;
+            $goalsTotalsThis['goals'][$gn] += $cntT;
+            $goalsTotalsLast['goals'][$gn] += $cntL;
+        }
+
+        $goalsBySource[$k] = [
+            'sessions' => $sessT,
+            'last_sessions' => $sessL,
+            'goals' => $srcGoalsT,
+            'last_goals' => $srcGoalsL,
+        ];
+    }
+
+    // Bottom charts (single-period snapshot; no YoY compare).
+    $distSeed = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|demographics')) & 0xFFFFFFFF;
+    $distRng = new DeterministicRng((int)$distSeed);
+    $totalDemo = max(1, (int)round($totalUsersThis * 0.65));
+
+    $mkDist = function (array $labels) use ($distRng, $totalDemo): array {
+        $weights = [];
+        foreach ($labels as $_) {
+            $weights[] = $distRng->float(0.2, 1.2);
+        }
+        $vals = phase3_split_total_by_weights($totalDemo, $weights);
+        $items = [];
+        for ($i = 0; $i < count($labels); $i++) {
+            $items[] = ['label' => (string)$labels[$i], 'value' => (int)($vals[$i] ?? 0)];
+        }
+        return $items;
+    };
+
+    $demographics = [
+        'gender' => $mkDist(['Vyrai', 'Moterys', 'Nežinoma']),
+        'browsers' => $mkDist(['Chrome', 'Safari', 'Firefox', 'Edge', 'Kita']),
+        'devices' => $mkDist(['Mobilus', 'Stalinis', 'Planšetė']),
+        'age' => $mkDist(['18–24', '25–34', '35–44', '45–54', '55–64', '65+', 'Nežinoma']),
+    ];
+
+    return [
+        'sources' => $sources,
+        'visits' => [
+            'totals' => [
+                'users' => $totalUsersThis,
+                'new_users' => $totalNewThis,
+                'sessions' => $totalSessThis,
+                'last_users' => $totalUsersLast,
+                'last_new_users' => $totalNewLast,
+                'last_sessions' => $totalSessLast,
+            ],
+            'by_source' => $visitsBySource,
+        ],
+        'behavior' => [
+            'totals' => [
+                'engagement_rate' => round($baseEngThis, 4),
+                'pages_per_session' => round($basePpsThis, 2),
+                'avg_session_duration_sec' => (int)$baseDurThis,
+                'last_engagement_rate' => round($baseEngLast, 4),
+                'last_pages_per_session' => round($basePpsLast, 2),
+                'last_avg_session_duration_sec' => (int)$baseDurLast,
+            ],
+            'by_source' => $behaviorBySource,
+        ],
+        'sales' => [
+            'enabled' => $includeSales,
+            'totals' => $salesTotals,
+            'by_source' => $salesBySource,
+        ],
+        'goals' => [
+            'excluded_events' => $excluded,
+            'goal_names' => $goalNames,
+            'totals_this' => $goalsTotalsThis,
+            'totals_last' => $goalsTotalsLast,
+            'by_source' => $goalsBySource,
+        ],
+        'demographics' => $demographics,
     ];
 }
 
