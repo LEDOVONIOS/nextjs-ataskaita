@@ -98,39 +98,48 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
 
     // Only attempt GA4 if configured AND project has property id.
     if ($ga4Configured && $ga4PropertyId !== '') {
-        $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
-        if ($thisMonth['ok']) {
-            $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
-            if ($lastYear['ok']) {
-                $meta['mode'] = 'REAL+MOCK';
-                $meta['ga4Used'] = true;
+        try {
+            $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
+            if ($thisMonth['ok']) {
+                $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
+                if ($lastYear['ok']) {
+                    $meta['mode'] = 'REAL+MOCK';
+                    $meta['ga4Used'] = true;
 
-                $curTotals = (array)$thisMonth['totals'];
-                $prevTotals = (array)$lastYear['totals'];
-                $analytics['visitors_overview'] = [
-                    'totals' => $curTotals,
-                    'daily' => (array)$thisMonth['daily'],
-                    'last_year' => [
-                        'totals' => $prevTotals,
-                        'daily' => (array)$lastYear['daily'],
-                    ],
-                    'change_pct' => [
-                        'users' => pct_change((float)($curTotals['users'] ?? null), (float)($prevTotals['users'] ?? null)),
-                        'new_users' => pct_change((float)($curTotals['new_users'] ?? null), (float)($prevTotals['new_users'] ?? null)),
-                        'sessions' => pct_change((float)($curTotals['sessions'] ?? null), (float)($prevTotals['sessions'] ?? null)),
-                    ],
-                ];
+                    $curTotals = (array)$thisMonth['totals'];
+                    $prevTotals = (array)$lastYear['totals'];
+                    $analytics['visitors_overview'] = [
+                        'totals' => $curTotals,
+                        'daily' => (array)$thisMonth['daily'],
+                        'last_year' => [
+                            'totals' => $prevTotals,
+                            'daily' => (array)$lastYear['daily'],
+                        ],
+                        'change_pct' => [
+                            'users' => pct_change((float)($curTotals['users'] ?? null), (float)($prevTotals['users'] ?? null)),
+                            'new_users' => pct_change((float)($curTotals['new_users'] ?? null), (float)($prevTotals['new_users'] ?? null)),
+                            'sessions' => pct_change((float)($curTotals['sessions'] ?? null), (float)($prevTotals['sessions'] ?? null)),
+                        ],
+                    ];
+                } else {
+                    $errors['ga4'] = [
+                        'message' => 'GA4 is configured but last-year comparison failed; using mock visitors overview.',
+                        'details' => $lastYear['error'] ?? null,
+                    ];
+                    $reportStatus = 'PARTIAL';
+                }
             } else {
                 $errors['ga4'] = [
-                    'message' => 'GA4 is configured but last-year comparison failed; using mock visitors overview.',
-                    'details' => $lastYear['error'] ?? null,
+                    'message' => 'GA4 is configured but failed to fetch visitors overview; using mock visitors overview.',
+                    'details' => $thisMonth['error'] ?? null,
                 ];
                 $reportStatus = 'PARTIAL';
             }
-        } else {
+        } catch (Throwable $e) {
+            error_log('GA4 visitors overview failed: ' . $e->getMessage());
             $errors['ga4'] = [
-                'message' => 'GA4 is configured but failed to fetch visitors overview; using mock visitors overview.',
-                'details' => $thisMonth['error'] ?? null,
+                'message' => 'GA4 is configured but encountered an unexpected error; using mock visitors overview.',
+                'details' => ['exception' => get_class($e)],
             ];
             $reportStatus = 'PARTIAL';
         }
@@ -172,28 +181,95 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     ];
 }
 
-function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, string $status, array $snapshot): void
+function monthly_reports_allowed_statuses(PDO $pdo): array
 {
-    $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json === false) {
-        throw new RuntimeException('Failed to encode JSON snapshot');
+    static $cached = null;
+    if (is_array($cached)) {
+        return $cached;
     }
 
-    $allowed = ['READY', 'PARTIAL', 'GENERATING', 'ERROR'];
-    if (!in_array($status, $allowed, true)) {
-        $status = 'READY';
+    $fallback = ['READY', 'PARTIAL', 'GENERATING', 'ERROR'];
+    try {
+        $stmt = $pdo->query("
+            SELECT COLUMN_TYPE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'monthly_reports'
+              AND COLUMN_NAME = 'status'
+            LIMIT 1
+        ");
+        $columnType = $stmt ? $stmt->fetchColumn() : false;
+        $columnType = is_string($columnType) ? trim($columnType) : '';
+        if ($columnType === '') {
+            $cached = $fallback;
+            return $cached;
+        }
+
+        // Typical form: enum('READY','PARTIAL','GENERATING','ERROR')
+        $vals = [];
+        if (preg_match('/^enum\s*\((.*)\)\s*$/i', $columnType, $m) === 1) {
+            if (preg_match_all("/'((?:\\\\'|[^'])*)'/", (string)$m[1], $mm) >= 1) {
+                foreach ((array)$mm[1] as $raw) {
+                    $vals[] = str_replace("\\'", "'", (string)$raw);
+                }
+            }
+        }
+
+        $vals = array_values(array_filter(array_map('strval', $vals), fn($v) => $v !== ''));
+        $cached = $vals ?: $fallback;
+        return $cached;
+    } catch (Throwable $e) {
+        error_log('Failed to read monthly_reports.status enum: ' . $e->getMessage());
+        $cached = $fallback;
+        return $cached;
+    }
+}
+
+function monthly_reports_sanitize_status(PDO $pdo, string $status): string
+{
+    $status = strtoupper(trim($status));
+    $allowed = monthly_reports_allowed_statuses($pdo);
+    if (in_array($status, $allowed, true)) {
+        return $status;
+    }
+    return in_array('READY', $allowed, true) ? 'READY' : ($allowed[0] ?? 'READY');
+}
+
+function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, string $status, array $snapshot): void
+{
+    $status = monthly_reports_sanitize_status($pdo, $status);
+
+    $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        error_log('Failed to encode JSON snapshot for monthly report (project_id=' . $projectId . ', ' . $year . '-' . $month . ')');
+        $json = null;
+        $status = monthly_reports_sanitize_status($pdo, 'ERROR');
     }
 
     // Insert-or-update by unique key (project_id, year, month).
+    // Store JSON as a plain string (MariaDB-safe); the column is treated as LONGTEXT in code.
     $sql = "
         INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-        VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), CAST(? AS JSON))
+        VALUES (:pid, :year, :month, :status, UTC_TIMESTAMP(), :json)
         ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            generated_at = UTC_TIMESTAMP(),
-            data_json = CAST(? AS JSON)
+          status = :status2,
+          generated_at = UTC_TIMESTAMP(),
+          data_json = :json2
     ";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([$projectId, $year, $month, $status, $json, $json]);
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':pid' => $projectId,
+            ':year' => $year,
+            ':month' => $month,
+            ':status' => $status,
+            ':json' => $json,
+            ':status2' => $status,
+            ':json2' => $json,
+        ]);
+    } catch (Throwable $e) {
+        error_log('Failed to upsert monthly report (project_id=' . $projectId . ', ' . $year . '-' . $month . '): ' . $e->getMessage());
+        throw $e;
+    }
 }
 

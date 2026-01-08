@@ -44,12 +44,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $results[] = ['project' => (string)$project['name'], 'status' => $status === 'PARTIAL' ? 'PARTIAL' : 'OK'];
         } catch (Throwable $e) {
             $fail++;
-            $err = $pdo->prepare("
-                INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-                VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
-                ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
-            ");
-            $err->execute([$pid, $year, $month]);
+            error_log('Report generation failed (project_id=' . $pid . ', ' . $year . '-' . $month . '): ' . $e->getMessage());
+            try {
+                $err = $pdo->prepare("
+                    INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
+                    VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
+                    ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
+                ");
+                $err->execute([$pid, $year, $month]);
+            } catch (Throwable $e2) {
+                error_log('Failed to persist ERROR status for monthly report (project_id=' . $pid . ', ' . $year . '-' . $month . '): ' . $e2->getMessage());
+            }
             $results[] = ['project' => (string)$project['name'], 'status' => 'ERROR'];
         }
     }

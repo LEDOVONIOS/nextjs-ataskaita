@@ -55,12 +55,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
         redirect('/report.php?id=' . $rid);
     } catch (Throwable $e) {
-        $err = $pdo->prepare("
-            INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-            VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
-            ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
-        ");
-        $err->execute([$projectId, $year, $month]);
+        error_log('Report generation failed (project_id=' . $projectId . ', ' . $year . '-' . $month . '): ' . $e->getMessage());
+        try {
+            $err = $pdo->prepare("
+                INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
+                VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
+                ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
+            ");
+            $err->execute([$projectId, $year, $month]);
+        } catch (Throwable $e2) {
+            error_log('Failed to persist ERROR status for monthly report (project_id=' . $projectId . ', ' . $year . '-' . $month . '): ' . $e2->getMessage());
+        }
 
         flash_set('error', 'Report generation failed.');
         redirect('/generate.php?project_id=' . $projectId . '&year=' . $year . '&month=' . $month);
