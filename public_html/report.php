@@ -14,40 +14,253 @@ $u = current_user();
 $userId = (int)$u['id'];
 $role = (string)$u['role'];
 
+// Extra assets for this page (shared-hosting friendly).
+$GLOBALS['EXTRA_CSS'] = ['/assets/css/report.css'];
+$GLOBALS['EXTRA_BODY_CLASS'] = 'page--report';
+$GLOBALS['EXTRA_MAIN_CLASS'] = 'container--wide';
+
+function report_month_date_ranges_utc(int $year, int $month): array
+{
+    $start = sprintf('%04d-%02d-01', $year, $month);
+    $days = (int)date('t', strtotime($start));
+    $end = sprintf('%04d-%02d-%02d', $year, $month, $days);
+    $lastStart = sprintf('%04d-%02d-01', $year - 1, $month);
+    $lastDays = (int)date('t', strtotime($lastStart));
+    $lastEnd = sprintf('%04d-%02d-%02d', $year - 1, $month, $lastDays);
+    return [$start, $end, $lastStart, $lastEnd];
+}
+
+function report_fetch_row_by_id(PDO $pdo, int $reportId): ?array
+{
+    $stmt = $pdo->prepare('
+        SELECT r.id, r.project_id, r.year, r.month, r.status, r.generated_at, r.data_json,
+               p.name AS project_name, p.show_sales_section, p.ga4_property_id, p.gsc_site_url
+        FROM monthly_reports r
+        INNER JOIN projects p ON p.id = r.project_id
+        WHERE r.id = ?
+        LIMIT 1
+    ');
+    $stmt->execute([$reportId]);
+    $row = $stmt->fetch();
+    return $row ? (array)$row : null;
+}
+
+function report_fetch_row_by_project_period(PDO $pdo, int $projectId, int $year, int $month): ?array
+{
+    $stmt = $pdo->prepare('
+        SELECT r.id, r.project_id, r.year, r.month, r.status, r.generated_at, r.data_json,
+               p.name AS project_name, p.show_sales_section, p.ga4_property_id, p.gsc_site_url
+        FROM monthly_reports r
+        INNER JOIN projects p ON p.id = r.project_id
+        WHERE r.project_id = ? AND r.year = ? AND r.month = ?
+        LIMIT 1
+    ');
+    $stmt->execute([$projectId, $year, $month]);
+    $row = $stmt->fetch();
+    return $row ? (array)$row : null;
+}
+
+function report_fetch_latest_ready(PDO $pdo, int $projectId): ?array
+{
+    $stmt = $pdo->prepare('
+        SELECT r.id, r.project_id, r.year, r.month, r.status, r.generated_at, r.data_json,
+               p.name AS project_name, p.show_sales_section, p.ga4_property_id, p.gsc_site_url
+        FROM monthly_reports r
+        INNER JOIN projects p ON p.id = r.project_id
+        WHERE r.project_id = ? AND r.status IN ("READY","PARTIAL")
+        ORDER BY r.year DESC, r.month DESC
+        LIMIT 1
+    ');
+    $stmt->execute([$projectId]);
+    $row = $stmt->fetch();
+    return $row ? (array)$row : null;
+}
+
+function report_contract_pct_change(?float $this, ?float $last): ?float
+{
+    if ($this === null || $last === null) {
+        return null;
+    }
+    if ($last == 0.0) {
+        return null;
+    }
+    return ($this - $last) / $last;
+}
+
+function report_contract_make_timeseries(array $labels, array $thisArr, array $lastArr): array
+{
+    return [
+        'labels' => array_values($labels),
+        'this' => array_values($thisArr),
+        'last' => array_values($lastArr),
+    ];
+}
+
+function report_contract_make_metric(string $label, mixed $this, mixed $last, string $format, string $unit = ''): array
+{
+    return [
+        'label' => $label,
+        'this' => $this,
+        'last' => $last,
+        'format' => $format,
+        'unit' => $unit,
+    ];
+}
+
+/**
+ * Normalize any snapshot into the Phase 3 UI contract:
+ *   sections.traffic[preset_key][tab_key] = { timeseries, totals }
+ * This keeps old saved snapshots viewable even after we switch the UI.
+ */
+function normalize_report_contract(array $snapshot, array $row): array
+{
+    $projectId = (int)($row['project_id'] ?? 0);
+    $projectName = (string)($row['project_name'] ?? '');
+    $year = (int)($row['year'] ?? 0);
+    $month = (int)($row['month'] ?? 0);
+    $currency = 'EUR';
+    $timezone = 'Europe/Vilnius';
+    $generatedUtc = (string)($row['generated_at'] ?? '');
+
+    [$thisStart, $thisEnd, $lastStart, $lastEnd] = report_month_date_ranges_utc($year, $month);
+
+    $base = [
+        'meta' => [
+            'schema_version' => 1,
+            'currency' => $currency,
+            'timezone' => $timezone,
+            'generated_utc' => $generatedUtc,
+        ],
+        'project' => [
+            'id' => $projectId,
+            'name' => $projectName,
+            'show_sales_section' => ((int)($row['show_sales_section'] ?? 1)) === 1,
+        ],
+        'period' => [
+            'year' => $year,
+            'month' => $month,
+            'label' => sprintf('%04d-%02d', $year, $month),
+            'compare_to' => [
+                'year' => $year - 1,
+                'month' => $month,
+                'label' => sprintf('%04d-%02d', $year - 1, $month),
+            ],
+            'date_ranges' => [
+                'this_start' => $thisStart,
+                'this_end' => $thisEnd,
+                'last_start' => $lastStart,
+                'last_end' => $lastEnd,
+            ],
+        ],
+        'sections' => [
+            'traffic' => [],
+        ],
+    ];
+
+    // If already in the contract shape, trust it (but ensure required keys exist).
+    if (isset($snapshot['sections']['traffic']) && is_array($snapshot['sections']['traffic'])) {
+        $base['meta'] = is_array($snapshot['meta'] ?? null) ? (array)$snapshot['meta'] + $base['meta'] : $base['meta'];
+        $base['period'] = is_array($snapshot['period'] ?? null) ? (array)$snapshot['period'] + $base['period'] : $base['period'];
+        $base['project'] = is_array($snapshot['project'] ?? null) ? (array)$snapshot['project'] + $base['project'] : $base['project'];
+        $base['sections']['traffic'] = (array)$snapshot['sections']['traffic'];
+        return $base;
+    }
+
+    // Backward compatibility: map older Phase 3 snapshot keys (visitors/behavior/sales/goals) into the new contract (preset=all only).
+    // Old generator used: visitors.summary, visitors.chart, behavior.summary, etc.
+    $trafficAll = [];
+
+    $mapOldSectionToTab = function (string $oldKey, string $tabKey, array $metricMap) use ($snapshot): array {
+        $sec = isset($snapshot[$oldKey]) && is_array($snapshot[$oldKey]) ? (array)$snapshot[$oldKey] : [];
+        $chart = isset($sec['chart']) && is_array($sec['chart']) ? (array)$sec['chart'] : [];
+        $labels = (array)($chart['labels'] ?? []);
+        $thisArr = (array)($chart['this_month'] ?? []);
+        $lastArr = (array)($chart['last_year'] ?? []);
+
+        $summary = isset($sec['summary']) && is_array($sec['summary']) ? (array)$sec['summary'] : [];
+        $thisMain = isset($summary['this_month']) ? (float)$summary['this_month'] : null;
+        $lastMain = isset($summary['last_year']) ? (float)$summary['last_year'] : null;
+
+        $totals = [];
+        foreach ($metricMap as $k => $def) {
+            $totals[$k] = report_contract_make_metric($def['label'], $def['this'] ?? $thisMain, $def['last'] ?? $lastMain, $def['format'], $def['unit'] ?? '');
+        }
+
+        return [
+            'timeseries' => report_contract_make_timeseries($labels, $thisArr, $lastArr),
+            'totals' => $totals,
+        ];
+    };
+
+    $trafficAll['visits'] = $mapOldSectionToTab('visitors', 'visits', [
+        'users' => ['label' => 'Users', 'format' => 'int', 'unit' => ''],
+        'new_users' => ['label' => 'New Users', 'format' => 'int', 'unit' => ''],
+        'sessions' => ['label' => 'Sessions', 'format' => 'int', 'unit' => ''],
+    ]);
+    $trafficAll['behavior'] = $mapOldSectionToTab('behavior', 'behavior', [
+        'engagement_rate' => ['label' => 'Engagement rate', 'format' => 'pct', 'unit' => '%'],
+        'pages_per_session' => ['label' => 'Pages / session', 'format' => 'float1', 'unit' => ''],
+        'avg_session_duration_sec' => ['label' => 'Avg session duration', 'format' => 'seconds', 'unit' => 's'],
+    ]);
+    $trafficAll['sales'] = $mapOldSectionToTab('sales', 'sales', [
+        'conversion_rate' => ['label' => 'Conversion rate', 'format' => 'pct', 'unit' => '%'],
+        'purchases' => ['label' => 'Purchases', 'format' => 'int', 'unit' => ''],
+        'revenue' => ['label' => 'Revenue', 'format' => 'money', 'unit' => 'EUR'],
+    ]);
+    $trafficAll['goals'] = $mapOldSectionToTab('goals', 'goals', [
+        'goal_1' => ['label' => 'Goal: Newsletter', 'format' => 'int', 'unit' => ''],
+        'goal_2' => ['label' => 'Goal: Contact form', 'format' => 'int', 'unit' => ''],
+        'goal_conversion_rate' => ['label' => 'Goal conversion rate', 'format' => 'pct', 'unit' => '%'],
+    ]);
+
+    $base['sections']['traffic'] = [
+        'all' => $trafficAll,
+    ];
+    return $base;
+}
+
 $reportId = safe_int($_GET['id'] ?? 0, 0);
-if ($reportId <= 0) {
+$projectIdParam = safe_int($_GET['project_id'] ?? 0, 0);
+$yearParam = safe_int($_GET['year'] ?? 0, 0);
+$monthParam = safe_int($_GET['month'] ?? 0, 0);
+
+$row = null;
+if ($reportId > 0) {
+    $row = report_fetch_row_by_id($pdo, $reportId);
+} elseif ($projectIdParam > 0 && $yearParam >= 2000 && $yearParam <= 2100 && $monthParam >= 1 && $monthParam <= 12) {
+    $row = report_fetch_row_by_project_period($pdo, $projectIdParam, $yearParam, $monthParam);
+} elseif ($projectIdParam > 0) {
+    $row = report_fetch_latest_ready($pdo, $projectIdParam);
+} else {
     http_response_code(400);
-    echo 'Bad Request';
+    render_header('Report');
+    echo '<div class="card"><p>Missing report selector. Provide <code>id</code> or <code>project_id</code> (optional <code>year</code>, <code>month</code>).</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    render_footer();
     exit;
 }
 
-$stmt = $pdo->prepare('
-    SELECT r.id, r.project_id, r.year, r.month, r.status, r.generated_at, r.data_json,
-           p.name AS project_name, p.show_sales_section, p.ga4_property_id, p.gsc_site_url
-    FROM monthly_reports r
-    INNER JOIN projects p ON p.id = r.project_id
-    WHERE r.id = ?
-    LIMIT 1
-');
-$stmt->execute([$reportId]);
-$row = $stmt->fetch();
 if (!$row) {
     http_response_code(404);
-    echo 'Not Found';
+    render_header('Report');
+    echo '<div class="card"><p>Report not found.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    render_footer();
     exit;
 }
 
 $projectId = (int)$row['project_id'];
 if (!user_can_access_project($pdo, $userId, $role, $projectId)) {
     http_response_code(403);
-    echo 'Forbidden';
+    render_header('Report');
+    echo '<div class="card"><p>Forbidden.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    render_footer();
     exit;
 }
 
 $status = (string)$row['status'];
 $year = (int)$row['year'];
 $month = (int)$row['month'];
-$title = 'Report: ' . (string)$row['project_name'] . ' — ' . $year . '-' . str_pad((string)$month, 2, '0', STR_PAD_LEFT);
+$projectName = (string)$row['project_name'];
+$title = 'Ataskaita: ' . $projectName . ' — ' . $year . '-' . str_pad((string)$month, 2, '0', STR_PAD_LEFT);
 
 render_header($title);
 
@@ -68,656 +281,54 @@ if (!is_array($snapshot)) {
     exit;
 }
 
-$notes = (array)($snapshot['notes'] ?? []);
-$workSummary = (string)($notes['work_summary'] ?? '');
-$errors = (array)($snapshot['errors'] ?? []);
-
-// ---- Phase 3 helpers (stable schema + backward compatibility) ----
-function fmt_pct(?float $p): string
-{
-    if ($p === null) {
-        return '—';
-    }
-    return (string)round($p * 100, 1) . '%';
-}
-
-function fmt_int(?float $v): string
-{
-    if ($v === null) {
-        return '—';
-    }
-    return number_format((float)$v, 0, '.', ' ');
-}
-
-function fmt_money(?float $v): string
-{
-    if ($v === null) {
-        return '—';
-    }
-    return '€' . number_format((float)$v, 0, '.', ' ');
-}
-
-function phase3_pct_change(?float $current, ?float $previous): ?float
-{
-    if ($current === null || $previous === null) {
-        return null;
-    }
-    if ($previous == 0.0) {
-        return null;
-    }
-    return ($current - $previous) / $previous;
-}
-
-function phase3_channel_list(): array
-{
-    return [
-        'Paid Search',
-        'Direct',
-        'Organic Social',
-        'Google Ads Performance Max / Smart Shopping',
-        'Paid Social',
-        'Referral',
-        'Email',
-        'Display',
-    ];
-}
-
-function phase3_build_channels_from_total(float $thisTotal, float $lastTotal): array
-{
-    // Fixed, plausible shares (kept stable; Phase 4 will map real GA buckets).
-    $shares = [
-        'Paid Search' => 0.14,
-        'Direct' => 0.20,
-        'Organic Social' => 0.08,
-        'Google Ads Performance Max / Smart Shopping' => 0.10,
-        'Paid Social' => 0.09,
-        'Referral' => 0.07,
-        'Email' => 0.05,
-        'Display' => 0.04,
-    ];
-    $sum = array_sum($shares) ?: 1.0;
-    $rows = [];
-
-    $remainingThis = (float)$thisTotal;
-    $remainingLast = (float)$lastTotal;
-    $i = 0;
-    $keys = array_keys($shares);
-    foreach ($keys as $k) {
-        $isLast = ($i === count($keys) - 1);
-        $share = $shares[$k] / $sum;
-        $vThis = $isLast ? $remainingThis : floor($thisTotal * $share);
-        $vLast = $isLast ? $remainingLast : floor($lastTotal * $share);
-        $remainingThis -= $vThis;
-        $remainingLast -= $vLast;
-        $rows[] = [
-            'channel' => $k,
-            'this_month' => (float)max(0, $vThis),
-            'last_year' => (float)max(0, $vLast),
-            'change_pct' => phase3_pct_change((float)$vThis, (float)$vLast),
-        ];
-        $i++;
-    }
-
-    array_unshift($rows, [
-        'channel' => 'All visitors',
-        'this_month' => (float)$thisTotal,
-        'last_year' => (float)$lastTotal,
-        'change_pct' => phase3_pct_change((float)$thisTotal, (float)$lastTotal),
-    ]);
-
-    return $rows;
-}
-
-function phase3_empty_section(string $title, string $metricLabel, string $metricFormat): array
-{
-    return [
-        'title' => $title,
-        'metric' => ['label' => $metricLabel, 'format' => $metricFormat],
-        'summary' => ['change_pct' => null, 'this_month' => null, 'last_year' => null],
-        'chart' => ['labels' => [], 'this_month' => [], 'last_year' => [], 'label_this_month' => '', 'label_last_year' => ''],
-        'channels' => [],
-    ];
-}
-
-function normalize_snapshot_phase3(array $snapshot, array $row): array
-{
-    // If already Phase 3 schema, just enforce required keys.
-    if (isset($snapshot['meta'], $snapshot['visitors'], $snapshot['behavior'], $snapshot['sales'], $snapshot['goals'], $snapshot['seo'])) {
-        foreach (['meta', 'overview', 'visitors', 'behavior', 'sales', 'goals', 'seo', 'notes', 'errors'] as $k) {
-            if (!array_key_exists($k, $snapshot)) {
-                $snapshot[$k] = null;
-            }
-        }
-        if (!isset($snapshot['notes']) || !is_array($snapshot['notes'])) {
-            $snapshot['notes'] = ['work_summary' => ''];
-        }
-        if (!isset($snapshot['errors']) || !is_array($snapshot['errors'])) {
-            $snapshot['errors'] = [];
-        }
-        return $snapshot;
-    }
-
-    // Older snapshots: best-effort upgrade into Phase 3 shape (structure-first).
-    $year = (int)($row['year'] ?? 0);
-    $month = (int)($row['month'] ?? 0);
-    $projectId = (int)($row['project_id'] ?? 0);
-    $showSales = ((int)($row['show_sales_section'] ?? 1)) === 1;
-
-    $analytics = isset($snapshot['analytics']) && is_array($snapshot['analytics']) ? (array)$snapshot['analytics'] : [];
-    $vis = isset($analytics['visitors_overview']) && is_array($analytics['visitors_overview']) ? (array)$analytics['visitors_overview'] : [];
-    $visTotals = isset($vis['totals']) && is_array($vis['totals']) ? (array)$vis['totals'] : $vis;
-    $usersThis = (float)($visTotals['users'] ?? 0);
-    $usersLast = 0.0;
-    if (isset($vis['last_year']['totals']['users'])) {
-        $usersLast = (float)$vis['last_year']['totals']['users'];
-    } elseif ($usersThis > 0) {
-        $usersLast = (float)round($usersThis / 1.12, 0);
-    }
-
-    $salesOld = $analytics['sales'] ?? null;
-    $revThis = ($showSales && is_array($salesOld)) ? (float)($salesOld['revenue'] ?? 0) : null;
-
-    $workSummary = '';
-    if (isset($snapshot['notes']) && is_array($snapshot['notes'])) {
-        $workSummary = (string)($snapshot['notes']['work_summary'] ?? '');
-    }
-
-    $meta = [
-        'generatedAt' => (string)($snapshot['meta']['generatedAt'] ?? ($snapshot['generated_at_utc'] ?? '')),
-        'schemaVersion' => 'phase3',
-        'mode' => 'MOCK',
-        'reportStatus' => 'READY',
-        'project' => [
-            'id' => $projectId,
-            'name' => (string)($row['project_name'] ?? ''),
-            'showSalesSection' => $showSales,
-        ],
-        'period' => [
-            'year' => $year,
-            'month' => $month,
-        ],
-    ];
-
-    $visitors = [
-        'title' => 'Apsilankymų duomenys',
-        'metric' => ['label' => 'Users', 'format' => 'int'],
-        'summary' => [
-            'change_pct' => phase3_pct_change($usersThis, $usersLast),
-            'this_month' => $usersThis,
-            'last_year' => $usersLast,
-        ],
-        'chart' => [
-            'labels' => [],
-            'this_month' => [],
-            'last_year' => [],
-            'label_this_month' => sprintf('%04d-%02d', $year, $month),
-            'label_last_year' => sprintf('%04d-%02d', $year - 1, $month),
-        ],
-        'channels' => phase3_build_channels_from_total($usersThis, $usersLast),
-    ];
-
-    $behavior = phase3_empty_section('Lankytojų elgesys', 'Engagement rate', 'pct');
-    $sales = $showSales
-        ? phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money')
-        : ['title' => 'Pardavimų duomenys', 'visible' => false] + phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money');
-    if ($showSales && $revThis !== null) {
-        $sales['summary']['this_month'] = $revThis;
-        $sales['summary']['last_year'] = $revThis > 0 ? round($revThis / 1.10, 0) : 0.0;
-        $sales['summary']['change_pct'] = phase3_pct_change((float)$sales['summary']['this_month'], (float)$sales['summary']['last_year']);
-        $sales['channels'] = phase3_build_channels_from_total((float)$sales['summary']['this_month'], (float)$sales['summary']['last_year']);
-    }
-
-    $goals = phase3_empty_section('Įgyvendinti tikslai', 'Goal completions', 'int');
-    $seo = phase3_empty_section('SEO', 'Clicks', 'int');
-
-    return [
-        'meta' => $meta,
-        'overview' => [
-            'title' => 'Overview',
-            'kpis' => [
-                ['label' => 'Users', 'value' => $usersThis],
-                ['label' => 'Revenue', 'value' => $revThis],
-            ],
-        ],
-        'visitors' => $visitors,
-        'behavior' => $behavior,
-        'sales' => $sales,
-        'goals' => $goals,
-        'seo' => $seo,
-        'notes' => ['work_summary' => $workSummary],
-        'errors' => [],
-    ];
-}
-
-// Project config from DB (more reliable for old snapshots).
-$projectCfg = [
-    'show_sales_section' => ((int)($row['show_sales_section'] ?? 1)) === 1,
-    'gsc_site_url' => trim((string)($row['gsc_site_url'] ?? '')),
-];
-
-$snapshotPhase3 = normalize_snapshot_phase3($snapshot, $row);
-
-$salesVisible = $projectCfg['show_sales_section'];
-if (isset($snapshotPhase3['sales']) && is_array($snapshotPhase3['sales'])) {
-    if (array_key_exists('visible', $snapshotPhase3['sales']) && $snapshotPhase3['sales']['visible'] === false) {
-        $salesVisible = false;
-    }
-}
-
-$showSales = $salesVisible;
-$showSeo = true; // Phase 3: SEO is always shown (MOCK for now).
-$showPpc = true;
-$showEmail = true;
-$showAffiliate = true;
+$reportData = normalize_report_contract($snapshot, $row);
+$showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
 ?>
 
-<div class="report-layout">
-  <aside class="report-sidebar" aria-label="Report navigation">
-    <div class="card sidebar-card">
-      <div class="sidebar-title">On this report</div>
-      <div class="muted sidebar-meta">
-        <?php
-          $genAt = (string)($snapshotPhase3['meta']['generatedAt'] ?? ($row['generated_at'] ?? ''));
-          $mode = (string)($snapshotPhase3['meta']['mode'] ?? 'MOCK');
-        ?>
-        <div>Generated: <?php echo e($genAt !== '' ? $genAt : '—'); ?></div>
-        <div>Mode: <?php echo e($mode !== '' ? $mode : '—'); ?></div>
-      </div>
-      <nav class="sidebar-nav">
-        <a class="sidebar-link" href="#overview">Overview</a>
-        <a class="sidebar-link" href="#visitors">Apsilankymų duomenys</a>
-        <a class="sidebar-link" href="#behavior">Lankytojų elgesys</a>
-        <?php if ($showSales): ?><a class="sidebar-link" href="#sales">Pardavimų duomenys</a><?php endif; ?>
-        <a class="sidebar-link" href="#goals">Įgyvendinti tikslai</a>
-        <a class="sidebar-link" href="#seo">SEO</a>
-        <a class="sidebar-link" href="#ppc">PPC</a>
-        <a class="sidebar-link" href="#email">Email marketing</a>
-        <a class="sidebar-link" href="#affiliate">Affiliate</a>
-        <a class="sidebar-link" href="#notes">Notes</a>
-      </nav>
+<div class="report3" id="reportApp">
+  <div class="report3__top card">
+    <div class="report3__topTitle">
+      <?php echo e($projectName); ?>
+      <span class="report3__pill"><?php echo e(sprintf('%04d-%02d', $year, $month)); ?></span>
+      <span class="report3__pill report3__pill--muted">MOCK</span>
     </div>
-  </aside>
-
-  <div class="report-content">
-    <div class="report-quick-tabs" role="navigation" aria-label="Quick navigation">
-      <a class="quick-tab" href="#visitors">Apsilankymai</a>
-      <a class="quick-tab" href="#behavior">Elgesys</a>
-      <?php if ($showSales): ?><a class="quick-tab" href="#sales">Pardavimai</a><?php endif; ?>
-      <a class="quick-tab" href="#goals">Tikslai</a>
-    </div>
-
-    <section id="overview" class="report-section">
-      <div class="report-section__title">Overview</div>
-      <div class="card">
-        <div class="card__title">Final report structure (Phase 3)</div>
-        <p class="muted">Data is currently MOCK. HTML structure + snapshot JSON schema are final for Phase 4 integrations.</p>
-      </div>
-    </section>
-
     <?php
-      $visitors = is_array($snapshotPhase3['visitors'] ?? null) ? (array)$snapshotPhase3['visitors'] : phase3_empty_section('Apsilankymų duomenys', 'Users', 'int');
-      $behavior = is_array($snapshotPhase3['behavior'] ?? null) ? (array)$snapshotPhase3['behavior'] : phase3_empty_section('Lankytojų elgesys', 'Engagement rate', 'pct');
-      $salesSection = is_array($snapshotPhase3['sales'] ?? null) ? (array)$snapshotPhase3['sales'] : phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money');
-      $goals = is_array($snapshotPhase3['goals'] ?? null) ? (array)$snapshotPhase3['goals'] : phase3_empty_section('Įgyvendinti tikslai', 'Goal completions', 'int');
-      $seo = is_array($snapshotPhase3['seo'] ?? null) ? (array)$snapshotPhase3['seo'] : phase3_empty_section('SEO', 'Clicks', 'int');
-
-      function format_metric(?float $v, string $format): string {
-          return match ($format) {
-              'money' => fmt_money($v),
-              'pct' => ($v === null ? '—' : (string)round($v * 100, 1) . '%'),
-              'seconds' => ($v === null ? '—' : fmt_int($v) . 's'),
-              default => fmt_int($v),
-          };
-      }
+      $dr = (array)($reportData['period']['date_ranges'] ?? []);
+      $thisRange = (string)($dr['this_start'] ?? '') . ' – ' . (string)($dr['this_end'] ?? '');
+      $lastRange = (string)($dr['last_start'] ?? '') . ' – ' . (string)($dr['last_end'] ?? '');
     ?>
+    <div class="report3__topSub">
+      <span class="muted">Laikotarpis:</span> <?php echo e($thisRange); ?>
+      <span class="muted">· Palyginimas:</span> <?php echo e($lastRange); ?>
+    </div>
+  </div>
 
-    <section id="visitors" class="report-section">
-      <div class="report-section__title"><?php echo e((string)($visitors['title'] ?? 'Apsilankymų duomenys')); ?></div>
+  <div class="report3__layout">
+    <aside class="report3__sidebar card" aria-label="Channel presets">
+      <div class="report3__sidebarTitle">Ataskaitos kanalai</div>
+      <nav class="report3__presetNav" id="presetNav"></nav>
+    </aside>
+
+    <div class="report3__content">
+      <div class="report3__tabs" role="navigation" aria-label="Quick tabs" id="quickTabs"></div>
+      <div id="sectionsRoot"></div>
       <div class="card">
-        <div class="card__header">
-          <div class="card__title"><?php echo e((string)($visitors['title'] ?? 'Apsilankymų duomenys')); ?></div>
-        </div>
-        <canvas id="chartVisitorsLine" height="160"></canvas>
-
-        <div class="card__subtitle">Summary</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php
-                $fmt = (string)(($visitors['metric']['format'] ?? 'int'));
-                $label = (string)(($visitors['metric']['label'] ?? 'Value'));
-                $sum = is_array($visitors['summary'] ?? null) ? (array)$visitors['summary'] : [];
-              ?>
-              <tr>
-                <td><strong><?php echo e($label); ?></strong></td>
-                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card__subtitle">Channel breakdown</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php foreach ((array)($visitors['channels'] ?? []) as $r): ?>
-                <tr>
-                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
-                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section id="behavior" class="report-section">
-      <div class="report-section__title"><?php echo e((string)($behavior['title'] ?? 'Lankytojų elgesys')); ?></div>
-      <div class="card">
-        <div class="card__header">
-          <div class="card__title"><?php echo e((string)($behavior['title'] ?? 'Lankytojų elgesys')); ?></div>
-        </div>
-        <canvas id="chartBehaviorLine" height="160"></canvas>
-
-        <div class="card__subtitle">Summary</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php
-                $fmt = (string)(($behavior['metric']['format'] ?? 'pct'));
-                $label = (string)(($behavior['metric']['label'] ?? 'Value'));
-                $sum = is_array($behavior['summary'] ?? null) ? (array)$behavior['summary'] : [];
-              ?>
-              <tr>
-                <td><strong><?php echo e($label); ?></strong></td>
-                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card__subtitle">Channel breakdown</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php foreach ((array)($behavior['channels'] ?? []) as $r): ?>
-                <tr>
-                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
-                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <?php if ($showSales): ?>
-      <section id="sales" class="report-section">
-        <div class="report-section__title"><?php echo e((string)($salesSection['title'] ?? 'Pardavimų duomenys')); ?></div>
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title"><?php echo e((string)($salesSection['title'] ?? 'Pardavimų duomenys')); ?></div>
-          </div>
-          <canvas id="chartSalesLine" height="160"></canvas>
-
-          <div class="card__subtitle">Summary</div>
-          <div class="table-wrap">
-            <table class="table table--compact">
-              <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-              <tbody>
-                <?php
-                  $fmt = (string)(($salesSection['metric']['format'] ?? 'money'));
-                  $label = (string)(($salesSection['metric']['label'] ?? 'Value'));
-                  $sum = is_array($salesSection['summary'] ?? null) ? (array)$salesSection['summary'] : [];
-                ?>
-                <tr>
-                  <td><strong><?php echo e($label); ?></strong></td>
-                  <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="card__subtitle">Channel breakdown</div>
-          <div class="table-wrap">
-            <table class="table table--compact">
-              <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-              <tbody>
-                <?php foreach ((array)($salesSection['channels'] ?? []) as $r): ?>
-                  <tr>
-                    <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
-                    <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
-                    <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'money')); ?></td>
-                    <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'money')); ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-    <?php endif; ?>
-
-    <section id="goals" class="report-section">
-      <div class="report-section__title"><?php echo e((string)($goals['title'] ?? 'Įgyvendinti tikslai')); ?></div>
-      <div class="card">
-        <div class="card__header">
-          <div class="card__title"><?php echo e((string)($goals['title'] ?? 'Įgyvendinti tikslai')); ?></div>
-        </div>
-        <canvas id="chartGoalsLine" height="160"></canvas>
-
-        <div class="card__subtitle">Summary</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php
-                $fmt = (string)(($goals['metric']['format'] ?? 'int'));
-                $label = (string)(($goals['metric']['label'] ?? 'Value'));
-                $sum = is_array($goals['summary'] ?? null) ? (array)$goals['summary'] : [];
-              ?>
-              <tr>
-                <td><strong><?php echo e($label); ?></strong></td>
-                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card__subtitle">Channel breakdown</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php foreach ((array)($goals['channels'] ?? []) as $r): ?>
-                <tr>
-                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
-                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section id="seo" class="report-section">
-      <div class="report-section__title"><?php echo e((string)($seo['title'] ?? 'SEO')); ?></div>
-      <div class="card">
-        <div class="card__header">
-          <div class="card__title"><?php echo e((string)($seo['title'] ?? 'SEO')); ?></div>
-        </div>
-        <canvas id="chartSeoLine" height="160"></canvas>
-
-        <div class="card__subtitle">Summary</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php
-                $fmt = (string)(($seo['metric']['format'] ?? 'int'));
-                $label = (string)(($seo['metric']['label'] ?? 'Value'));
-                $sum = is_array($seo['summary'] ?? null) ? (array)$seo['summary'] : [];
-              ?>
-              <tr>
-                <td><strong><?php echo e($label); ?></strong></td>
-                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
-                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card__subtitle">Channel breakdown</div>
-        <div class="table-wrap">
-          <table class="table table--compact">
-            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
-            <tbody>
-              <?php foreach ((array)($seo['channels'] ?? []) as $r): ?>
-                <tr>
-                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
-                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
-                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section id="ppc" class="report-section">
-      <div class="report-section__title">PPC</div>
-      <div class="card">
-        <div class="card__title">PPC</div>
-        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse the channel breakdown + Google Ads data.</p>
-      </div>
-    </section>
-
-    <section id="email" class="report-section">
-      <div class="report-section__title">Email marketing</div>
-      <div class="card">
-        <div class="card__title">Email marketing</div>
-        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse GA channel data (Email bucket) and ESP metrics.</p>
-      </div>
-    </section>
-
-    <section id="affiliate" class="report-section">
-      <div class="report-section__title">Affiliate</div>
-      <div class="card">
-        <div class="card__title">Affiliate</div>
-        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse GA channel data (Referral/Affiliate mapping) and partner stats.</p>
-      </div>
-    </section>
-
-    <section id="notes" class="report-section">
-      <div class="report-section__title">Notes</div>
-      <div class="card">
-        <div class="card__title">Monthly work summary (snapshot)</div>
-        <?php
-          $notes = is_array($snapshotPhase3['notes'] ?? null) ? (array)$snapshotPhase3['notes'] : [];
-          $workSummary = (string)($notes['work_summary'] ?? '');
-        ?>
-        <?php if (trim($workSummary) === ''): ?>
-          <p class="muted">No work summary was included at generation time.</p>
-        <?php else: ?>
-          <div class="prose"><?php echo nl2br(e($workSummary)); ?></div>
-        <?php endif; ?>
         <div class="card__actions">
           <a class="btn" href="<?php echo e(url('/dashboard.php')); ?>">Back to dashboard</a>
         </div>
       </div>
-    </section>
+    </div>
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
-window.REPORT_SNAPSHOT = <?php echo json_encode(
-    $snapshotPhase3,
+window.REPORT_DATA = <?php echo json_encode(
+    $reportData,
     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
 ); ?>;
 </script>
-<script src="<?php echo e(url('/assets/js/charts.js')); ?>"></script>
-<script>
-(function () {
-  'use strict';
-  function scrollToHash(hash) {
-    var el = document.querySelector(hash);
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  // Smooth-scroll for sidebar links + quick tabs.
-  document.addEventListener('click', function (e) {
-    var a = e.target && e.target.closest ? e.target.closest('a[href^="#"]') : null;
-    if (!a) return;
-    var href = a.getAttribute('href');
-    if (!href || href === '#') return;
-    var target = document.querySelector(href);
-    if (!target) return;
-    e.preventDefault();
-    history.replaceState(null, '', href);
-    scrollToHash(href);
-  });
-
-  // Active section highlight on scroll.
-  var links = Array.prototype.slice.call(document.querySelectorAll('.sidebar-link'));
-  var sections = Array.prototype.slice.call(document.querySelectorAll('.report-section[id]'));
-  function setActiveById(id) {
-    var hash = '#' + id;
-    links.forEach(function (a) {
-      a.classList.toggle('is-active', a.getAttribute('href') === hash);
-    });
-  }
-
-  if ('IntersectionObserver' in window) {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) {
-        if (en.isIntersecting) {
-          setActiveById(en.target.id);
-        }
-      });
-    }, { root: null, rootMargin: '-30% 0px -65% 0px', threshold: 0.01 });
-    sections.forEach(function (s) { io.observe(s); });
-  } else {
-    window.addEventListener('scroll', function () {
-      var best = null;
-      var bestTop = -Infinity;
-      for (var i = 0; i < sections.length; i++) {
-        var r = sections[i].getBoundingClientRect();
-        if (r.top < 140 && r.top > bestTop) {
-          bestTop = r.top;
-          best = sections[i];
-        }
-      }
-      if (best) setActiveById(best.id);
-    }, { passive: true });
-  }
-})();
-</script>
+<script src="<?php echo e(url('/assets/js/report_ui.js')); ?>"></script>
 
 <?php
 render_footer();

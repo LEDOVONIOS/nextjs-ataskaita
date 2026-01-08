@@ -6,6 +6,9 @@ function render_header(string $title): void
     $u = current_user();
     $flash = flash_all();
     $isAdmin = $u && ($u['role'] ?? '') === 'ADMIN';
+    $extraCss = $GLOBALS['EXTRA_CSS'] ?? [];
+    $bodyClass = (string)($GLOBALS['EXTRA_BODY_CLASS'] ?? '');
+    $mainClass = (string)($GLOBALS['EXTRA_MAIN_CLASS'] ?? '');
 
     echo '<!doctype html>';
     echo '<html lang="en">';
@@ -14,8 +17,16 @@ function render_header(string $title): void
     echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . e($title) . ' - ' . e(APP_NAME) . '</title>';
     echo '<link rel="stylesheet" href="' . e(url('/assets/css/style.css')) . '">';
+    if (is_array($extraCss)) {
+        foreach ($extraCss as $cssPath) {
+            if (!is_string($cssPath) || trim($cssPath) === '') {
+                continue;
+            }
+            echo '<link rel="stylesheet" href="' . e(url($cssPath)) . '">';
+        }
+    }
     echo '</head>';
-    echo '<body>';
+    echo '<body' . ($bodyClass !== '' ? ' class="' . e($bodyClass) . '"' : '') . '>';
     echo '<header class="topbar">';
     echo '<div class="container topbar__inner">';
     echo '<div class="brand"><a href="' . e(url('/dashboard.php')) . '">' . e(APP_NAME) . '</a></div>';
@@ -38,7 +49,8 @@ function render_header(string $title): void
     echo '</div>';
     echo '</header>';
 
-    echo '<main class="container">';
+    $mainClasses = 'container' . ($mainClass !== '' ? ' ' . $mainClass : '');
+    echo '<main class="' . e($mainClasses) . '">';
     foreach ($flash as $k => $msg) {
         $class = 'alert alert--success';
         if ($k === 'error') {
