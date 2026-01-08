@@ -32,6 +32,27 @@ If you upload into a subfolder instead of the document root, also set:
 
 - `BASE_PATH` (example: `/reports`)
 
+## Error logs (file-based)
+
+The app writes errors to:
+
+- `public_html/storage/logs/app.log`
+
+If you see “Report generation failed. Check storage/logs/app.log”, open that file to see the underlying error.
+
+### Permissions (shared hosting)
+
+The `public_html/storage/logs/` directory must be writable by the PHP process.
+
+Example (if you have SSH access):
+
+```bash
+mkdir -p public_html/storage/logs
+chmod -R 775 public_html/storage
+```
+
+On cPanel/shared hosting without SSH, use File Manager to set `storage/` (or at least `storage/logs/`) to be writable.
+
 ## Default admin credentials
 
 - Email: `admin@example.com`
@@ -100,11 +121,11 @@ Phase 2 keeps the Phase 1 structure, but can optionally pull **real GA4 Visitors
 
 - Create a Service Account in Google Cloud and download its **JSON key**.
 
-### 3) Upload `service-account.json` (NOT publicly accessible)
+### 3) Upload Service Account JSON (NOT publicly accessible)
 
 Upload the JSON key to:
 
-- `public_html/includes/keys/service-account.json`
+- `public_html/includes/keys/ataskaitu-sistema-6a64265403e6.json`
 
 That folder ships with an `.htaccess` that denies web access. Do **not** upload the key anywhere else (and never commit it to git).
 
@@ -125,7 +146,7 @@ Set:
 
 Defaults already point to:
 
-- `public_html/includes/keys/service-account.json`
+- `public_html/includes/keys/ataskaitu-sistema-6a64265403e6.json`
 
 ### 5) Add the Service Account email to your GA4 property
 
