@@ -6,6 +6,16 @@
   if (!snap || !snap.analytics) return;
   if (typeof Chart === 'undefined') return;
 
+  function sectionIsReal(key) {
+    var meta = snap.meta || {};
+    var sections = meta.sections || {};
+    var m = sections[key];
+    if (!m) return true; // old snapshots (no meta) - don't break
+    var src = String(m.source || 'MOCK').toUpperCase();
+    var ok = !!m.ok;
+    return src !== 'MOCK' && ok;
+  }
+
   function ctx(id) {
     var el = document.getElementById(id);
     return el ? el.getContext('2d') : null;
@@ -26,6 +36,7 @@
   (function () {
     var c = ctx('chartVisitors');
     if (!c) return;
+    if (!sectionIsReal('visitors_overview')) return;
     var v = snap.analytics.visitors_overview || {};
     var totals = v.totals || v;
     var daily = Array.isArray(v.daily) ? v.daily : [];
@@ -90,6 +101,7 @@
   (function () {
     var c = ctx('chartChannels');
     if (!c) return;
+    if (!sectionIsReal('traffic_channels')) return;
     var ch = snap.analytics.traffic_channels || [];
     var labels = ch.map(function (x) { return x.channel; });
     var data = ch.map(function (x) { return x.users; });
@@ -123,6 +135,7 @@
   (function () {
     var c = ctx('chartSales');
     if (!c) return;
+    if (!sectionIsReal('sales')) return;
     var s = snap.analytics.sales;
     if (!s) return;
     new Chart(c, {
@@ -149,6 +162,7 @@
   (function () {
     var c = ctx('chartSeo');
     if (!c) return;
+    if (!sectionIsReal('seo_summary')) return;
     var seo = snap.analytics.seo_summary || {};
     new Chart(c, {
       type: 'bar',
