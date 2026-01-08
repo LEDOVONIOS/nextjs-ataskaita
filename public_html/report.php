@@ -295,8 +295,41 @@ if (!is_array($snapshot)) {
 $reportData = normalize_report_contract($snapshot, $row);
 $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
 
+$segmentViews = [
+    'organic_social' => [
+        'segment_key' => 'Organic Social',
+        'label' => 'Natūralaus srauto iš socialinių tinklų ataskaita',
+    ],
+    'referral' => [
+        'segment_key' => 'Referral',
+        'label' => 'Lankytojų iš kitų tinklapių ataskaita',
+    ],
+    'email' => [
+        'segment_key' => 'Email',
+        'label' => 'Lankytojų iš el. pašto ataskaita',
+    ],
+    'paid_social' => [
+        'segment_key' => 'Paid Social',
+        'label' => 'Mokamos reklamos socialinių tinklų ataskaita',
+    ],
+];
+
 $view = safe_string($_GET['view'] ?? 'all', 'all');
-$view = in_array($view, ['seo', 'ppc'], true) ? $view : 'all';
+$allowedViews = array_merge(['all', 'seo', 'ppc'], array_keys($segmentViews));
+$view = in_array($view, $allowedViews, true) ? $view : 'all';
+
+$activeSegmentKey = null;
+$activeSegmentLabel = null;
+if (isset($segmentViews[$view])) {
+    $activeSegmentKey = (string)$segmentViews[$view]['segment_key'];
+    $activeSegmentLabel = (string)$segmentViews[$view]['label'];
+}
+
+// Pass active view/segment to the UI (JS decides what data to render).
+$reportData['meta'] = is_array($reportData['meta'] ?? null) ? (array)$reportData['meta'] : [];
+$reportData['meta']['active_view'] = $view;
+$reportData['meta']['active_segment_key'] = $activeSegmentKey;
+$reportData['meta']['active_segment_label'] = $activeSegmentLabel;
 
 // Save SEO work summary directly into the report snapshot (UI editing for internal users only).
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -389,6 +422,30 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
            href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=all'; ?>"
            <?php echo $view === 'all' ? 'aria-current="page"' : ''; ?>>
           <span class="report3__presetLabel">Visų tinklalapio lankytojų ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
+        <a class="report3__presetLink <?php echo $view === 'organic_social' ? 'is-active' : ''; ?>"
+           href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=organic_social'; ?>"
+           <?php echo $view === 'organic_social' ? 'aria-current="page"' : ''; ?>>
+          <span class="report3__presetLabel">Natūralaus srauto iš socialinių tinklų ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
+        <a class="report3__presetLink <?php echo $view === 'referral' ? 'is-active' : ''; ?>"
+           href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=referral'; ?>"
+           <?php echo $view === 'referral' ? 'aria-current="page"' : ''; ?>>
+          <span class="report3__presetLabel">Lankytojų iš kitų tinklapių ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
+        <a class="report3__presetLink <?php echo $view === 'email' ? 'is-active' : ''; ?>"
+           href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=email'; ?>"
+           <?php echo $view === 'email' ? 'aria-current="page"' : ''; ?>>
+          <span class="report3__presetLabel">Lankytojų iš el. pašto ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
+        <a class="report3__presetLink <?php echo $view === 'paid_social' ? 'is-active' : ''; ?>"
+           href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=paid_social'; ?>"
+           <?php echo $view === 'paid_social' ? 'aria-current="page"' : ''; ?>>
+          <span class="report3__presetLabel">Mokamos reklamos socialinių tinklų ataskaita</span>
           <span class="report3__presetChevron">›</span>
         </a>
         <a class="report3__presetLink <?php echo $view === 'ppc' ? 'is-active' : ''; ?>"
@@ -706,7 +763,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
               <canvas id="chart-visits-line" height="160"></canvas>
             </div>
             <div class="report3__compare">
-              <div class="report3__tableTitle">Visų lankytojų apsilankymų duomenys</div>
+              <?php
+                $visitsTableTitle = $view === 'all'
+                  ? 'Visų lankytojų apsilankymų duomenys'
+                  : 'Apsilankymų duomenys: ' . (string)($activeSegmentLabel ?? '—');
+              ?>
+              <div class="report3__tableTitle"><?php echo e($visitsTableTitle); ?></div>
               <div class="table-wrap">
                 <table class="table table--compact" id="table-visits"></table>
               </div>
@@ -738,7 +800,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
               </div>
             </div>
             <div class="report3__compare">
-              <div class="report3__tableTitle">Pardavimų duomenys visiems lankytojams</div>
+              <?php
+                $salesTableTitle = $view === 'all'
+                  ? 'Pardavimų duomenys visiems lankytojams'
+                  : 'Pardavimų duomenys: ' . (string)($activeSegmentLabel ?? '—');
+              ?>
+              <div class="report3__tableTitle"><?php echo e($salesTableTitle); ?></div>
               <div class="table-wrap">
                 <table class="table table--compact" id="table-sales"></table>
               </div>
@@ -774,7 +841,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 <div class="report3__donutLegend" id="legend-donut-gender"></div>
               </div>
               <div class="report3__donut card card--flat">
-                <div class="report3__donutTitle">Lankytojų naudojamos naršyklės</div>
+                <div class="report3__donutTitle"><?php echo e($activeSegmentKey ? 'Miestai' : 'Lankytojų naudojamos naršyklės'); ?></div>
                 <canvas id="chart-donut-browsers" height="180"></canvas>
                 <div class="report3__donutLegend" id="legend-donut-browsers"></div>
               </div>
