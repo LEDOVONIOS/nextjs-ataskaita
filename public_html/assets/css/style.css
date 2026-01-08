@@ -203,7 +203,7 @@ canvas{max-width:100%}
   background: linear-gradient(135deg, rgba(79,140,255,.22), rgba(110,231,255,.12));
 }
 
-.report-section{scroll-margin-top:84px}
+.report-section{scroll-margin-top:128px}
 .report-section__title{
   margin:10px 0 2px;
   font-weight:900;
@@ -227,4 +227,33 @@ canvas{max-width:100%}
 }
 .source-badge--real{color:var(--ok); border-color:rgba(52,211,153,.35)}
 .source-badge--mock{color:rgba(232,238,252,.65); border-color:rgba(255,255,255,.12)}
+
+/* Phase 3: quick tabs above report content */
+.report-quick-tabs{
+  position:sticky;
+  top:70px;
+  z-index:9;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  padding:10px 12px;
+  margin:0 0 10px;
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:rgba(11,18,32,.55);
+  backdrop-filter: blur(10px);
+}
+.quick-tab{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:7px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  text-decoration:none;
+  font-weight:800;
+  font-size:13px;
+  background:rgba(255,255,255,.03);
+}
+.quick-tab:hover{background:rgba(255,255,255,.06)}
 

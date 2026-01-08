@@ -68,74 +68,226 @@ if (!is_array($snapshot)) {
     exit;
 }
 
-$analytics = (array)($snapshot['analytics'] ?? []);
-$vis = (array)($analytics['visitors_overview'] ?? []);
-$visTotals = isset($vis['totals']) && is_array($vis['totals']) ? (array)$vis['totals'] : $vis;
-$channels = (array)($analytics['traffic_channels'] ?? []);
-$behavior = (array)($analytics['visitor_behavior'] ?? []);
-$sales = $analytics['sales'] ?? null;
-$seo = (array)($analytics['seo_summary'] ?? []);
 $notes = (array)($snapshot['notes'] ?? []);
 $workSummary = (string)($notes['work_summary'] ?? '');
 $errors = (array)($snapshot['errors'] ?? []);
 
-// ---- Snapshot transparency helpers (support old snapshots w/o meta.sections) ----
-function normalize_snapshot_sections_meta(array $snapshot): array
+// ---- Phase 3 helpers (stable schema + backward compatibility) ----
+function fmt_pct(?float $p): string
 {
-    $meta = isset($snapshot['meta']) && is_array($snapshot['meta']) ? (array)$snapshot['meta'] : [];
-    $sections = isset($meta['sections']) && is_array($meta['sections']) ? (array)$meta['sections'] : [];
-    if ($sections) {
-        return $sections;
+    if ($p === null) {
+        return '—';
+    }
+    return (string)round($p * 100, 1) . '%';
+}
+
+function fmt_int(?float $v): string
+{
+    if ($v === null) {
+        return '—';
+    }
+    return number_format((float)$v, 0, '.', ' ');
+}
+
+function fmt_money(?float $v): string
+{
+    if ($v === null) {
+        return '—';
+    }
+    return '€' . number_format((float)$v, 0, '.', ' ');
+}
+
+function phase3_pct_change(?float $current, ?float $previous): ?float
+{
+    if ($current === null || $previous === null) {
+        return null;
+    }
+    if ($previous == 0.0) {
+        return null;
+    }
+    return ($current - $previous) / $previous;
+}
+
+function phase3_channel_list(): array
+{
+    return [
+        'Paid Search',
+        'Direct',
+        'Organic Social',
+        'Google Ads Performance Max / Smart Shopping',
+        'Paid Social',
+        'Referral',
+        'Email',
+        'Display',
+    ];
+}
+
+function phase3_build_channels_from_total(float $thisTotal, float $lastTotal): array
+{
+    // Fixed, plausible shares (kept stable; Phase 4 will map real GA buckets).
+    $shares = [
+        'Paid Search' => 0.14,
+        'Direct' => 0.20,
+        'Organic Social' => 0.08,
+        'Google Ads Performance Max / Smart Shopping' => 0.10,
+        'Paid Social' => 0.09,
+        'Referral' => 0.07,
+        'Email' => 0.05,
+        'Display' => 0.04,
+    ];
+    $sum = array_sum($shares) ?: 1.0;
+    $rows = [];
+
+    $remainingThis = (float)$thisTotal;
+    $remainingLast = (float)$lastTotal;
+    $i = 0;
+    $keys = array_keys($shares);
+    foreach ($keys as $k) {
+        $isLast = ($i === count($keys) - 1);
+        $share = $shares[$k] / $sum;
+        $vThis = $isLast ? $remainingThis : floor($thisTotal * $share);
+        $vLast = $isLast ? $remainingLast : floor($lastTotal * $share);
+        $remainingThis -= $vThis;
+        $remainingLast -= $vLast;
+        $rows[] = [
+            'channel' => $k,
+            'this_month' => (float)max(0, $vThis),
+            'last_year' => (float)max(0, $vLast),
+            'change_pct' => phase3_pct_change((float)$vThis, (float)$vLast),
+        ];
+        $i++;
     }
 
-    $errors = isset($snapshot['errors']) && is_array($snapshot['errors']) ? (array)$snapshot['errors'] : [];
-    $ga4Used = (bool)($meta['ga4Used'] ?? false);
+    array_unshift($rows, [
+        'channel' => 'All visitors',
+        'this_month' => (float)$thisTotal,
+        'last_year' => (float)$lastTotal,
+        'change_pct' => phase3_pct_change((float)$thisTotal, (float)$lastTotal),
+    ]);
 
-    $base = [
-        'visitors_overview' => ['source' => 'MOCK', 'ok' => true],
-        'traffic_channels' => ['source' => 'MOCK', 'ok' => true],
-        'visitor_behavior' => ['source' => 'MOCK', 'ok' => true],
-        'sales' => ['source' => 'MOCK', 'ok' => true],
-        'seo_summary' => ['source' => 'MOCK', 'ok' => true],
-        'email_marketing' => ['source' => 'MOCK', 'ok' => true],
-        'affiliate' => ['source' => 'MOCK', 'ok' => true],
+    return $rows;
+}
+
+function phase3_empty_section(string $title, string $metricLabel, string $metricFormat): array
+{
+    return [
+        'title' => $title,
+        'metric' => ['label' => $metricLabel, 'format' => $metricFormat],
+        'summary' => ['change_pct' => null, 'this_month' => null, 'last_year' => null],
+        'chart' => ['labels' => [], 'this_month' => [], 'last_year' => [], 'label_this_month' => '', 'label_last_year' => ''],
+        'channels' => [],
+    ];
+}
+
+function normalize_snapshot_phase3(array $snapshot, array $row): array
+{
+    // If already Phase 3 schema, just enforce required keys.
+    if (isset($snapshot['meta'], $snapshot['visitors'], $snapshot['behavior'], $snapshot['sales'], $snapshot['goals'], $snapshot['seo'])) {
+        foreach (['meta', 'overview', 'visitors', 'behavior', 'sales', 'goals', 'seo', 'notes', 'errors'] as $k) {
+            if (!array_key_exists($k, $snapshot)) {
+                $snapshot[$k] = null;
+            }
+        }
+        if (!isset($snapshot['notes']) || !is_array($snapshot['notes'])) {
+            $snapshot['notes'] = ['work_summary' => ''];
+        }
+        if (!isset($snapshot['errors']) || !is_array($snapshot['errors'])) {
+            $snapshot['errors'] = [];
+        }
+        return $snapshot;
+    }
+
+    // Older snapshots: best-effort upgrade into Phase 3 shape (structure-first).
+    $year = (int)($row['year'] ?? 0);
+    $month = (int)($row['month'] ?? 0);
+    $projectId = (int)($row['project_id'] ?? 0);
+    $showSales = ((int)($row['show_sales_section'] ?? 1)) === 1;
+
+    $analytics = isset($snapshot['analytics']) && is_array($snapshot['analytics']) ? (array)$snapshot['analytics'] : [];
+    $vis = isset($analytics['visitors_overview']) && is_array($analytics['visitors_overview']) ? (array)$analytics['visitors_overview'] : [];
+    $visTotals = isset($vis['totals']) && is_array($vis['totals']) ? (array)$vis['totals'] : $vis;
+    $usersThis = (float)($visTotals['users'] ?? 0);
+    $usersLast = 0.0;
+    if (isset($vis['last_year']['totals']['users'])) {
+        $usersLast = (float)$vis['last_year']['totals']['users'];
+    } elseif ($usersThis > 0) {
+        $usersLast = (float)round($usersThis / 1.12, 0);
+    }
+
+    $salesOld = $analytics['sales'] ?? null;
+    $revThis = ($showSales && is_array($salesOld)) ? (float)($salesOld['revenue'] ?? 0) : null;
+
+    $workSummary = '';
+    if (isset($snapshot['notes']) && is_array($snapshot['notes'])) {
+        $workSummary = (string)($snapshot['notes']['work_summary'] ?? '');
+    }
+
+    $meta = [
+        'generatedAt' => (string)($snapshot['meta']['generatedAt'] ?? ($snapshot['generated_at_utc'] ?? '')),
+        'schemaVersion' => 'phase3',
+        'mode' => 'MOCK',
+        'reportStatus' => 'READY',
+        'project' => [
+            'id' => $projectId,
+            'name' => (string)($row['project_name'] ?? ''),
+            'showSalesSection' => $showSales,
+        ],
+        'period' => [
+            'year' => $year,
+            'month' => $month,
+        ],
     ];
 
-    if ($ga4Used) {
-        $base['visitors_overview'] = ['source' => 'GA4', 'ok' => true];
-        return $base;
+    $visitors = [
+        'title' => 'Apsilankymų duomenys',
+        'metric' => ['label' => 'Users', 'format' => 'int'],
+        'summary' => [
+            'change_pct' => phase3_pct_change($usersThis, $usersLast),
+            'this_month' => $usersThis,
+            'last_year' => $usersLast,
+        ],
+        'chart' => [
+            'labels' => [],
+            'this_month' => [],
+            'last_year' => [],
+            'label_this_month' => sprintf('%04d-%02d', $year, $month),
+            'label_last_year' => sprintf('%04d-%02d', $year - 1, $month),
+        ],
+        'channels' => phase3_build_channels_from_total($usersThis, $usersLast),
+    ];
+
+    $behavior = phase3_empty_section('Lankytojų elgesys', 'Engagement rate', 'pct');
+    $sales = $showSales
+        ? phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money')
+        : ['title' => 'Pardavimų duomenys', 'visible' => false] + phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money');
+    if ($showSales && $revThis !== null) {
+        $sales['summary']['this_month'] = $revThis;
+        $sales['summary']['last_year'] = $revThis > 0 ? round($revThis / 1.10, 0) : 0.0;
+        $sales['summary']['change_pct'] = phase3_pct_change((float)$sales['summary']['this_month'], (float)$sales['summary']['last_year']);
+        $sales['channels'] = phase3_build_channels_from_total((float)$sales['summary']['this_month'], (float)$sales['summary']['last_year']);
     }
 
-    $ga4Err = isset($errors['ga4']) && is_array($errors['ga4']) ? (array)$errors['ga4'] : [];
-    $msg = (string)($ga4Err['message'] ?? '');
-    if ($msg !== '') {
-        $base['visitors_overview'] = ['source' => 'MOCK', 'ok' => false, 'error' => $msg];
-    }
+    $goals = phase3_empty_section('Įgyvendinti tikslai', 'Goal completions', 'int');
+    $seo = phase3_empty_section('SEO', 'Clicks', 'int');
 
-    return $base;
+    return [
+        'meta' => $meta,
+        'overview' => [
+            'title' => 'Overview',
+            'kpis' => [
+                ['label' => 'Users', 'value' => $usersThis],
+                ['label' => 'Revenue', 'value' => $revThis],
+            ],
+        ],
+        'visitors' => $visitors,
+        'behavior' => $behavior,
+        'sales' => $sales,
+        'goals' => $goals,
+        'seo' => $seo,
+        'notes' => ['work_summary' => $workSummary],
+        'errors' => [],
+    ];
 }
-
-function snapshot_section_is_real(array $sectionsMeta, string $key): bool
-{
-    $m = isset($sectionsMeta[$key]) && is_array($sectionsMeta[$key]) ? (array)$sectionsMeta[$key] : [];
-    $source = strtoupper(trim((string)($m['source'] ?? 'MOCK')));
-    $ok = (bool)($m['ok'] ?? false);
-    return $source !== 'MOCK' && $ok;
-}
-
-function snapshot_section_badge(array $sectionsMeta, string $key): string
-{
-    $m = isset($sectionsMeta[$key]) && is_array($sectionsMeta[$key]) ? (array)$sectionsMeta[$key] : [];
-    $source = strtoupper(trim((string)($m['source'] ?? 'MOCK')));
-    $ok = (bool)($m['ok'] ?? false);
-    $isReal = $source !== 'MOCK' && $ok;
-    $label = $isReal ? 'REAL' : 'MOCK';
-    $title = $isReal ? ('Source: ' . $source) : 'Source: MOCK';
-    $cls = $isReal ? 'source-badge source-badge--real' : 'source-badge source-badge--mock';
-    return '<span class="' . e($cls) . '" title="' . e($title) . '">' . e($label) . '</span>';
-}
-
-$sectionsMeta = normalize_snapshot_sections_meta($snapshot);
 
 // Project config from DB (more reliable for old snapshots).
 $projectCfg = [
@@ -143,32 +295,21 @@ $projectCfg = [
     'gsc_site_url' => trim((string)($row['gsc_site_url'] ?? '')),
 ];
 
-$salesMetaIsReal = snapshot_section_is_real($sectionsMeta, 'sales');
-$showSales = $projectCfg['show_sales_section'] && $salesMetaIsReal && is_array($sales);
+$snapshotPhase3 = normalize_snapshot_phase3($snapshot, $row);
 
-// Sidebar visibility rules (Phase 2.1): based on snapshot.meta.sections and/or project fields.
-$showPpc = isset($sectionsMeta['traffic_channels']);
-$showSeo = isset($sectionsMeta['seo_summary']) || $projectCfg['gsc_site_url'] !== '';
-$showEmail = isset($sectionsMeta['email_marketing']);
-$showAffiliate = isset($sectionsMeta['affiliate']);
-
-// Provide meta.sections to JS even for old snapshots (read-only in-memory augmentation).
-$snapshotForJs = $snapshot;
-if (!isset($snapshotForJs['meta']) || !is_array($snapshotForJs['meta'])) {
-    $snapshotForJs['meta'] = [];
+$salesVisible = $projectCfg['show_sales_section'];
+if (isset($snapshotPhase3['sales']) && is_array($snapshotPhase3['sales'])) {
+    if (array_key_exists('visible', $snapshotPhase3['sales']) && $snapshotPhase3['sales']['visible'] === false) {
+        $salesVisible = false;
+    }
 }
-$snapshotForJs['meta']['sections'] = $sectionsMeta;
-?>
 
-<?php if ($status === 'PARTIAL'): ?>
-  <div class="alert alert--warn">
-    <?php
-      $ga4Err = (array)($errors['ga4'] ?? []);
-      $msg = (string)($ga4Err['message'] ?? 'Report is PARTIAL.');
-      echo e($msg);
-    ?>
-  </div>
-<?php endif; ?>
+$showSales = $salesVisible;
+$showSeo = true; // Phase 3: SEO is always shown (MOCK for now).
+$showPpc = true;
+$showEmail = true;
+$showAffiliate = true;
+?>
 
 <div class="report-layout">
   <aside class="report-sidebar" aria-label="Report navigation">
@@ -176,193 +317,329 @@ $snapshotForJs['meta']['sections'] = $sectionsMeta;
       <div class="sidebar-title">On this report</div>
       <div class="muted sidebar-meta">
         <?php
-          $genAt = (string)($snapshot['meta']['generatedAt'] ?? ($row['generated_at'] ?? ''));
-          $mode = (string)($snapshot['meta']['mode'] ?? '');
+          $genAt = (string)($snapshotPhase3['meta']['generatedAt'] ?? ($row['generated_at'] ?? ''));
+          $mode = (string)($snapshotPhase3['meta']['mode'] ?? 'MOCK');
         ?>
         <div>Generated: <?php echo e($genAt !== '' ? $genAt : '—'); ?></div>
         <div>Mode: <?php echo e($mode !== '' ? $mode : '—'); ?></div>
       </div>
       <nav class="sidebar-nav">
         <a class="sidebar-link" href="#overview">Overview</a>
-        <?php if ($showPpc): ?><a class="sidebar-link" href="#ppc">PPC</a><?php endif; ?>
-        <?php if ($showSeo): ?><a class="sidebar-link" href="#seo">SEO</a><?php endif; ?>
-        <?php if ($showEmail): ?><a class="sidebar-link" href="#email">Email marketing</a><?php endif; ?>
-        <?php if ($showAffiliate): ?><a class="sidebar-link" href="#affiliate">Affiliate</a><?php endif; ?>
+        <a class="sidebar-link" href="#visitors">Apsilankymų duomenys</a>
+        <a class="sidebar-link" href="#behavior">Lankytojų elgesys</a>
+        <?php if ($showSales): ?><a class="sidebar-link" href="#sales">Pardavimų duomenys</a><?php endif; ?>
+        <a class="sidebar-link" href="#goals">Įgyvendinti tikslai</a>
+        <a class="sidebar-link" href="#seo">SEO</a>
+        <a class="sidebar-link" href="#ppc">PPC</a>
+        <a class="sidebar-link" href="#email">Email marketing</a>
+        <a class="sidebar-link" href="#affiliate">Affiliate</a>
         <a class="sidebar-link" href="#notes">Notes</a>
       </nav>
     </div>
   </aside>
 
   <div class="report-content">
+    <div class="report-quick-tabs" role="navigation" aria-label="Quick navigation">
+      <a class="quick-tab" href="#visitors">Apsilankymai</a>
+      <a class="quick-tab" href="#behavior">Elgesys</a>
+      <?php if ($showSales): ?><a class="quick-tab" href="#sales">Pardavimai</a><?php endif; ?>
+      <a class="quick-tab" href="#goals">Tikslai</a>
+    </div>
+
     <section id="overview" class="report-section">
       <div class="report-section__title">Overview</div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title">Visitors overview <?php echo snapshot_section_badge($sectionsMeta, 'visitors_overview'); ?></div>
-          </div>
-
-          <?php if (snapshot_section_is_real($sectionsMeta, 'visitors_overview')): ?>
-            <div class="kpis">
-              <div class="kpi"><div class="kpi__label">Users</div><div class="kpi__value"><?php echo e((string)($visTotals['users'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">New users</div><div class="kpi__value"><?php echo e((string)($visTotals['new_users'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Sessions</div><div class="kpi__value"><?php echo e((string)($visTotals['sessions'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Engagement rate</div><div class="kpi__value"><?php echo e(isset($visTotals['engagement_rate']) ? (string)(round(((float)$visTotals['engagement_rate']) * 100, 1)) . '%' : '—'); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Avg session duration</div><div class="kpi__value"><?php echo e(isset($visTotals['avg_session_duration_sec']) ? (string)$visTotals['avg_session_duration_sec'] . 's' : (isset($visTotals['avg_engagement_time_sec']) ? (string)$visTotals['avg_engagement_time_sec'] . 's' : '—')); ?></div></div>
-            </div>
-            <canvas id="chartVisitors" height="140"></canvas>
-          <?php else: ?>
-            <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
-            <?php
-              $m = (array)($sectionsMeta['visitors_overview'] ?? []);
-              $err = (string)($m['error'] ?? '');
-            ?>
-            <?php if ($err !== ''): ?>
-              <details class="muted" style="margin-top:8px">
-                <summary>Why this is MOCK</summary>
-                <div style="margin-top:8px"><?php echo e($err); ?></div>
-              </details>
-            <?php endif; ?>
-          <?php endif; ?>
-        </div>
-
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title">Visitor behavior <?php echo snapshot_section_badge($sectionsMeta, 'visitor_behavior'); ?></div>
-          </div>
-
-          <?php if (snapshot_section_is_real($sectionsMeta, 'visitor_behavior')): ?>
-            <div class="kpis">
-              <div class="kpi"><div class="kpi__label">Pages / session</div><div class="kpi__value"><?php echo e((string)($behavior['pages_per_session'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Avg session duration</div><div class="kpi__value"><?php echo e(isset($behavior['avg_session_duration_sec']) ? (string)$behavior['avg_session_duration_sec'] . 's' : '—'); ?></div></div>
-            </div>
-            <div class="card__subtitle">Top pages</div>
-            <div class="table-wrap">
-              <table class="table table--compact">
-                <thead><tr><th>Path</th><th class="right">Views</th></tr></thead>
-                <tbody>
-                  <?php foreach ((array)($behavior['top_pages'] ?? []) as $p): ?>
-                    <tr>
-                      <td><code><?php echo e((string)($p['path'] ?? '')); ?></code></td>
-                      <td class="right"><?php echo e((string)($p['views'] ?? 0)); ?></td>
-                    </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-          <?php else: ?>
-            <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
-          <?php endif; ?>
-        </div>
-      </div>
-
       <div class="card">
-        <div class="card__header">
-          <div class="card__title">Sales <?php echo snapshot_section_badge($sectionsMeta, 'sales'); ?></div>
-        </div>
-
-        <?php if (!$projectCfg['show_sales_section']): ?>
-          <p class="muted">Sales section is disabled for this project.</p>
-        <?php elseif ($showSales): ?>
-          <div class="kpis">
-            <div class="kpi"><div class="kpi__label">Revenue</div><div class="kpi__value">$<?php echo e(number_format((float)($sales['revenue'] ?? 0), 2)); ?></div></div>
-            <div class="kpi"><div class="kpi__label">Transactions</div><div class="kpi__value"><?php echo e((string)($sales['transactions'] ?? 0)); ?></div></div>
-            <div class="kpi"><div class="kpi__label">AOV</div><div class="kpi__value">$<?php echo e(number_format((float)($sales['aov'] ?? 0), 2)); ?></div></div>
-            <div class="kpi"><div class="kpi__label">Conversion rate</div><div class="kpi__value"><?php echo e(isset($sales['conversion_rate']) ? (string)(round(((float)$sales['conversion_rate']) * 100, 2)) . '%' : '—'); ?></div></div>
-          </div>
-          <canvas id="chartSales" height="220"></canvas>
-        <?php else: ?>
-          <p class="muted">Sales requires GA4 Ecommerce events (Phase 4). This section will remain unavailable until Ecommerce tracking is implemented.</p>
-        <?php endif; ?>
+        <div class="card__title">Final report structure (Phase 3)</div>
+        <p class="muted">Data is currently MOCK. HTML structure + snapshot JSON schema are final for Phase 4 integrations.</p>
       </div>
     </section>
 
-    <?php if ($showPpc): ?>
-      <section id="ppc" class="report-section">
-        <div class="report-section__title">PPC</div>
+    <?php
+      $visitors = is_array($snapshotPhase3['visitors'] ?? null) ? (array)$snapshotPhase3['visitors'] : phase3_empty_section('Apsilankymų duomenys', 'Users', 'int');
+      $behavior = is_array($snapshotPhase3['behavior'] ?? null) ? (array)$snapshotPhase3['behavior'] : phase3_empty_section('Lankytojų elgesys', 'Engagement rate', 'pct');
+      $salesSection = is_array($snapshotPhase3['sales'] ?? null) ? (array)$snapshotPhase3['sales'] : phase3_empty_section('Pardavimų duomenys', 'Revenue', 'money');
+      $goals = is_array($snapshotPhase3['goals'] ?? null) ? (array)$snapshotPhase3['goals'] : phase3_empty_section('Įgyvendinti tikslai', 'Goal completions', 'int');
+      $seo = is_array($snapshotPhase3['seo'] ?? null) ? (array)$snapshotPhase3['seo'] : phase3_empty_section('SEO', 'Clicks', 'int');
+
+      function format_metric(?float $v, string $format): string {
+          return match ($format) {
+              'money' => fmt_money($v),
+              'pct' => ($v === null ? '—' : (string)round($v * 100, 1) . '%'),
+              'seconds' => ($v === null ? '—' : fmt_int($v) . 's'),
+              default => fmt_int($v),
+          };
+      }
+    ?>
+
+    <section id="visitors" class="report-section">
+      <div class="report-section__title"><?php echo e((string)($visitors['title'] ?? 'Apsilankymų duomenys')); ?></div>
+      <div class="card">
+        <div class="card__header">
+          <div class="card__title"><?php echo e((string)($visitors['title'] ?? 'Apsilankymų duomenys')); ?></div>
+        </div>
+        <canvas id="chartVisitorsLine" height="160"></canvas>
+
+        <div class="card__subtitle">Summary</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php
+                $fmt = (string)(($visitors['metric']['format'] ?? 'int'));
+                $label = (string)(($visitors['metric']['label'] ?? 'Value'));
+                $sum = is_array($visitors['summary'] ?? null) ? (array)$visitors['summary'] : [];
+              ?>
+              <tr>
+                <td><strong><?php echo e($label); ?></strong></td>
+                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card__subtitle">Channel breakdown</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php foreach ((array)($visitors['channels'] ?? []) as $r): ?>
+                <tr>
+                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
+                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="behavior" class="report-section">
+      <div class="report-section__title"><?php echo e((string)($behavior['title'] ?? 'Lankytojų elgesys')); ?></div>
+      <div class="card">
+        <div class="card__header">
+          <div class="card__title"><?php echo e((string)($behavior['title'] ?? 'Lankytojų elgesys')); ?></div>
+        </div>
+        <canvas id="chartBehaviorLine" height="160"></canvas>
+
+        <div class="card__subtitle">Summary</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php
+                $fmt = (string)(($behavior['metric']['format'] ?? 'pct'));
+                $label = (string)(($behavior['metric']['label'] ?? 'Value'));
+                $sum = is_array($behavior['summary'] ?? null) ? (array)$behavior['summary'] : [];
+              ?>
+              <tr>
+                <td><strong><?php echo e($label); ?></strong></td>
+                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card__subtitle">Channel breakdown</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php foreach ((array)($behavior['channels'] ?? []) as $r): ?>
+                <tr>
+                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
+                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <?php if ($showSales): ?>
+      <section id="sales" class="report-section">
+        <div class="report-section__title"><?php echo e((string)($salesSection['title'] ?? 'Pardavimų duomenys')); ?></div>
         <div class="card">
           <div class="card__header">
-            <div class="card__title">Traffic channels <?php echo snapshot_section_badge($sectionsMeta, 'traffic_channels'); ?></div>
+            <div class="card__title"><?php echo e((string)($salesSection['title'] ?? 'Pardavimų duomenys')); ?></div>
           </div>
-          <?php if (snapshot_section_is_real($sectionsMeta, 'traffic_channels')): ?>
-            <canvas id="chartChannels" height="220"></canvas>
-            <div class="table-wrap">
-              <table class="table table--compact">
-                <thead>
-                  <tr><th>Channel</th><th class="right">Users</th><th class="right">Sessions</th></tr>
-                </thead>
-                <tbody>
-                  <?php foreach ($channels as $c): ?>
-                    <tr>
-                      <td><?php echo e((string)($c['channel'] ?? '')); ?></td>
-                      <td class="right"><?php echo e((string)($c['users'] ?? 0)); ?></td>
-                      <td class="right"><?php echo e((string)($c['sessions'] ?? 0)); ?></td>
-                    </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-          <?php else: ?>
-            <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
-          <?php endif; ?>
+          <canvas id="chartSalesLine" height="160"></canvas>
+
+          <div class="card__subtitle">Summary</div>
+          <div class="table-wrap">
+            <table class="table table--compact">
+              <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+              <tbody>
+                <?php
+                  $fmt = (string)(($salesSection['metric']['format'] ?? 'money'));
+                  $label = (string)(($salesSection['metric']['label'] ?? 'Value'));
+                  $sum = is_array($salesSection['summary'] ?? null) ? (array)$salesSection['summary'] : [];
+                ?>
+                <tr>
+                  <td><strong><?php echo e($label); ?></strong></td>
+                  <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card__subtitle">Channel breakdown</div>
+          <div class="table-wrap">
+            <table class="table table--compact">
+              <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+              <tbody>
+                <?php foreach ((array)($salesSection['channels'] ?? []) as $r): ?>
+                  <tr>
+                    <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
+                    <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
+                    <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'money')); ?></td>
+                    <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'money')); ?></td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     <?php endif; ?>
 
-    <?php if ($showSeo): ?>
-      <section id="seo" class="report-section">
-        <div class="report-section__title">SEO</div>
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title">SEO summary <?php echo snapshot_section_badge($sectionsMeta, 'seo_summary'); ?></div>
-          </div>
-          <?php if (snapshot_section_is_real($sectionsMeta, 'seo_summary')): ?>
-            <div class="kpis">
-              <div class="kpi"><div class="kpi__label">Clicks</div><div class="kpi__value"><?php echo e((string)($seo['clicks'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Impressions</div><div class="kpi__value"><?php echo e((string)($seo['impressions'] ?? '—')); ?></div></div>
-              <div class="kpi"><div class="kpi__label">CTR</div><div class="kpi__value"><?php echo e(isset($seo['ctr']) ? (string)(round(((float)$seo['ctr']) * 100, 2)) . '%' : '—'); ?></div></div>
-              <div class="kpi"><div class="kpi__label">Avg position</div><div class="kpi__value"><?php echo e((string)($seo['avg_position'] ?? '—')); ?></div></div>
-            </div>
-            <canvas id="chartSeo" height="220"></canvas>
-          <?php else: ?>
-            <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
-            <?php if ($projectCfg['gsc_site_url'] === ''): ?>
-              <p class="muted">Tip: add a GSC Site URL in Admin → Projects to enable SEO in a future phase.</p>
-            <?php endif; ?>
-          <?php endif; ?>
+    <section id="goals" class="report-section">
+      <div class="report-section__title"><?php echo e((string)($goals['title'] ?? 'Įgyvendinti tikslai')); ?></div>
+      <div class="card">
+        <div class="card__header">
+          <div class="card__title"><?php echo e((string)($goals['title'] ?? 'Įgyvendinti tikslai')); ?></div>
         </div>
-      </section>
-    <?php endif; ?>
+        <canvas id="chartGoalsLine" height="160"></canvas>
 
-    <?php if ($showEmail): ?>
-      <section id="email" class="report-section">
-        <div class="report-section__title">Email marketing</div>
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title">Email marketing <?php echo snapshot_section_badge($sectionsMeta, 'email_marketing'); ?></div>
-          </div>
-          <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
+        <div class="card__subtitle">Summary</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php
+                $fmt = (string)(($goals['metric']['format'] ?? 'int'));
+                $label = (string)(($goals['metric']['label'] ?? 'Value'));
+                $sum = is_array($goals['summary'] ?? null) ? (array)$goals['summary'] : [];
+              ?>
+              <tr>
+                <td><strong><?php echo e($label); ?></strong></td>
+                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-      </section>
-    <?php endif; ?>
 
-    <?php if ($showAffiliate): ?>
-      <section id="affiliate" class="report-section">
-        <div class="report-section__title">Affiliate</div>
-        <div class="card">
-          <div class="card__header">
-            <div class="card__title">Affiliate <?php echo snapshot_section_badge($sectionsMeta, 'affiliate'); ?></div>
-          </div>
-          <p class="muted">Not configured yet. Will be enabled in the next phase.</p>
+        <div class="card__subtitle">Channel breakdown</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php foreach ((array)($goals['channels'] ?? []) as $r): ?>
+                <tr>
+                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
+                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
         </div>
-      </section>
-    <?php endif; ?>
+      </div>
+    </section>
+
+    <section id="seo" class="report-section">
+      <div class="report-section__title"><?php echo e((string)($seo['title'] ?? 'SEO')); ?></div>
+      <div class="card">
+        <div class="card__header">
+          <div class="card__title"><?php echo e((string)($seo['title'] ?? 'SEO')); ?></div>
+        </div>
+        <canvas id="chartSeoLine" height="160"></canvas>
+
+        <div class="card__subtitle">Summary</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th></th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php
+                $fmt = (string)(($seo['metric']['format'] ?? 'int'));
+                $label = (string)(($seo['metric']['label'] ?? 'Value'));
+                $sum = is_array($seo['summary'] ?? null) ? (array)$seo['summary'] : [];
+              ?>
+              <tr>
+                <td><strong><?php echo e($label); ?></strong></td>
+                <td class="right"><?php echo e(fmt_pct(isset($sum['change_pct']) ? (float)$sum['change_pct'] : null)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['this_month']) ? (float)$sum['this_month'] : null, $fmt)); ?></td>
+                <td class="right"><?php echo e(format_metric(isset($sum['last_year']) ? (float)$sum['last_year'] : null, $fmt)); ?></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card__subtitle">Channel breakdown</div>
+        <div class="table-wrap">
+          <table class="table table--compact">
+            <thead><tr><th>Channel</th><th class="right">Change %</th><th class="right">This month</th><th class="right">Last year same month</th></tr></thead>
+            <tbody>
+              <?php foreach ((array)($seo['channels'] ?? []) as $r): ?>
+                <tr>
+                  <td><?php echo e((string)($r['channel'] ?? '')); ?></td>
+                  <td class="right"><?php echo e(fmt_pct(isset($r['change_pct']) ? (float)$r['change_pct'] : null)); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['this_month']) ? (float)$r['this_month'] : null, 'int')); ?></td>
+                  <td class="right"><?php echo e(format_metric(isset($r['last_year']) ? (float)$r['last_year'] : null, 'int')); ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="ppc" class="report-section">
+      <div class="report-section__title">PPC</div>
+      <div class="card">
+        <div class="card__title">PPC</div>
+        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse the channel breakdown + Google Ads data.</p>
+      </div>
+    </section>
+
+    <section id="email" class="report-section">
+      <div class="report-section__title">Email marketing</div>
+      <div class="card">
+        <div class="card__title">Email marketing</div>
+        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse GA channel data (Email bucket) and ESP metrics.</p>
+      </div>
+    </section>
+
+    <section id="affiliate" class="report-section">
+      <div class="report-section__title">Affiliate</div>
+      <div class="card">
+        <div class="card__title">Affiliate</div>
+        <p class="muted">Phase 3 placeholder. In Phase 4 this will reuse GA channel data (Referral/Affiliate mapping) and partner stats.</p>
+      </div>
+    </section>
 
     <section id="notes" class="report-section">
       <div class="report-section__title">Notes</div>
       <div class="card">
         <div class="card__title">Monthly work summary (snapshot)</div>
+        <?php
+          $notes = is_array($snapshotPhase3['notes'] ?? null) ? (array)$snapshotPhase3['notes'] : [];
+          $workSummary = (string)($notes['work_summary'] ?? '');
+        ?>
         <?php if (trim($workSummary) === ''): ?>
           <p class="muted">No work summary was included at generation time.</p>
         <?php else: ?>
@@ -378,31 +655,67 @@ $snapshotForJs['meta']['sections'] = $sectionsMeta;
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
-window.REPORT_SNAPSHOT = <?php
-    echo json_encode(
-        $snapshotForJs,
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
-    );
-?>;
+window.REPORT_SNAPSHOT = <?php echo json_encode(
+    $snapshotPhase3,
+    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+); ?>;
 </script>
 <script src="<?php echo e(url('/assets/js/charts.js')); ?>"></script>
 <script>
 (function () {
   'use strict';
-  var links = document.querySelectorAll('.sidebar-link');
-  function setActive(hash) {
-    for (var i = 0; i < links.length; i++) {
-      var a = links[i];
-      if (a.getAttribute('href') === hash) a.classList.add('is-active');
-      else a.classList.remove('is-active');
-    }
+  function scrollToHash(hash) {
+    var el = document.querySelector(hash);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  function onHash() {
-    var h = window.location.hash || '#overview';
-    setActive(h);
+
+  // Smooth-scroll for sidebar links + quick tabs.
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href || href === '#') return;
+    var target = document.querySelector(href);
+    if (!target) return;
+    e.preventDefault();
+    history.replaceState(null, '', href);
+    scrollToHash(href);
+  });
+
+  // Active section highlight on scroll.
+  var links = Array.prototype.slice.call(document.querySelectorAll('.sidebar-link'));
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.report-section[id]'));
+  function setActiveById(id) {
+    var hash = '#' + id;
+    links.forEach(function (a) {
+      a.classList.toggle('is-active', a.getAttribute('href') === hash);
+    });
   }
-  window.addEventListener('hashchange', onHash);
-  onHash();
+
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          setActiveById(en.target.id);
+        }
+      });
+    }, { root: null, rootMargin: '-30% 0px -65% 0px', threshold: 0.01 });
+    sections.forEach(function (s) { io.observe(s); });
+  } else {
+    window.addEventListener('scroll', function () {
+      var best = null;
+      var bestTop = -Infinity;
+      for (var i = 0; i < sections.length; i++) {
+        var r = sections[i].getBoundingClientRect();
+        if (r.top < 140 && r.top > bestTop) {
+          bestTop = r.top;
+          best = sections[i];
+        }
+      }
+      if (best) setActiveById(best.id);
+    }, { passive: true });
+  }
 })();
 </script>
 

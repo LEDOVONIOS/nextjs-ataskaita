@@ -176,3 +176,12 @@ ALTER TABLE monthly_reports
   MODIFY status ENUM('READY','PARTIAL','GENERATING','ERROR') NOT NULL DEFAULT 'GENERATING';
 ```
 
+## Phase 3 completed – UI finalized
+
+Phase 3 focuses on **report structure and UI** (no Google API integrations yet):
+
+- `report.php` now uses a **finalized report layout**: left sidebar navigation + top quick tabs + finalized section structure.
+- Monthly report snapshots are stored with a **stable JSON schema** (reused in Phase 4):
+  - Top-level keys: `meta`, `overview`, `visitors`, `behavior`, `sales`, `goals`, `seo`, `notes`, `errors`
+- Data is still **MOCK**, but the **HTML structure and JSON shape are final**.
+

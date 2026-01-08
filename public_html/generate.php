@@ -41,18 +41,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     try {
         $snapshot = generate_report_snapshot($pdo, $project, $year, $month);
-        $status = (string)($snapshot['_report_status'] ?? 'READY');
+        $meta = isset($snapshot['meta']) && is_array($snapshot['meta']) ? (array)$snapshot['meta'] : [];
+        $status = (string)($meta['reportStatus'] ?? 'READY');
         upsert_monthly_report($pdo, $projectId, $year, $month, $status, $snapshot);
 
         $idStmt = $pdo->prepare('SELECT id FROM monthly_reports WHERE project_id = ? AND year = ? AND month = ? LIMIT 1');
         $idStmt->execute([$projectId, $year, $month]);
         $rid = (int)$idStmt->fetchColumn();
 
-        if ($status === 'PARTIAL') {
-            flash_set('warn', 'Report generated (PARTIAL): GA4 failed, using mock for Visitors Overview.');
-        } else {
-            flash_set('success', 'Report generated successfully.');
-        }
+        flash_set('success', 'Report generated successfully.');
         redirect('/report.php?id=' . $rid);
     } catch (Throwable $e) {
         log_error('Report generation failed', [

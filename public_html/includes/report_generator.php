@@ -2,8 +2,6 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/mock_data.php';
-require_once __DIR__ . '/ga4_connector.php';
-require_once __DIR__ . '/google_auth.php';
 
 function mock_visitors_overview_to_phase2(int $projectId, int $year, int $month, array $mockVisitors): array
 {
@@ -64,6 +62,240 @@ function pct_change(?float $current, ?float $previous): ?float
     return ($current - $previous) / $previous;
 }
 
+function phase3_safe_float(mixed $v, float $fallback = 0.0): float
+{
+    if ($v === null || $v === '') {
+        return $fallback;
+    }
+    if (is_int($v) || is_float($v)) {
+        return (float)$v;
+    }
+    if (is_string($v) && is_numeric($v)) {
+        return (float)$v;
+    }
+    return $fallback;
+}
+
+function phase3_safe_int(mixed $v, int $fallback = 0): int
+{
+    if ($v === null || $v === '') {
+        return $fallback;
+    }
+    if (is_int($v)) {
+        return $v;
+    }
+    if (is_float($v)) {
+        return (int)round($v);
+    }
+    if (is_string($v) && is_numeric($v)) {
+        return (int)round((float)$v);
+    }
+    return $fallback;
+}
+
+/**
+ * Phase 3 canonical channel list (used across all report sections).
+ * Keep labels stable (Phase 4 will map GA channels into these buckets).
+ */
+function phase3_channel_list(): array
+{
+    return [
+        'Paid Search',
+        'Direct',
+        'Organic Social',
+        'Google Ads Performance Max / Smart Shopping',
+        'Paid Social',
+        'Referral',
+        'Email',
+        'Display',
+    ];
+}
+
+/**
+ * Deterministic allocation of a total into fixed channel buckets.
+ * Returns array of rows: [channel => string, this_month => int, last_year => int, change_pct => ?float]
+ */
+function phase3_build_channel_breakdown(
+    int $projectId,
+    int $year,
+    int $month,
+    int $thisTotal,
+    int $lastYearTotal
+): array {
+    $channels = phase3_channel_list();
+
+    $seedThis = mock_seed_for_period($projectId, $year, $month) ^ 0x93a6b1c3;
+    $seedLast = mock_seed_for_period($projectId, $year - 1, $month) ^ 0x93a6b1c3;
+    $rngThis = new DeterministicRng($seedThis);
+    $rngLast = new DeterministicRng($seedLast);
+
+    // Slightly different weights for this vs last year (but stable/deterministic).
+    $weightsThis = [];
+    $weightsLast = [];
+    foreach ($channels as $c) {
+        // Keep plausible ranges per channel bucket.
+        $baseThis = match ($c) {
+            'Direct' => $rngThis->float(0.12, 0.26),
+            'Paid Search' => $rngThis->float(0.06, 0.20),
+            'Google Ads Performance Max / Smart Shopping' => $rngThis->float(0.03, 0.15),
+            'Organic Social' => $rngThis->float(0.04, 0.12),
+            'Paid Social' => $rngThis->float(0.03, 0.11),
+            'Referral' => $rngThis->float(0.03, 0.10),
+            'Email' => $rngThis->float(0.01, 0.07),
+            'Display' => $rngThis->float(0.01, 0.06),
+            default => $rngThis->float(0.02, 0.10),
+        };
+        $baseLast = match ($c) {
+            'Direct' => $rngLast->float(0.12, 0.26),
+            'Paid Search' => $rngLast->float(0.06, 0.20),
+            'Google Ads Performance Max / Smart Shopping' => $rngLast->float(0.03, 0.15),
+            'Organic Social' => $rngLast->float(0.04, 0.12),
+            'Paid Social' => $rngLast->float(0.03, 0.11),
+            'Referral' => $rngLast->float(0.03, 0.10),
+            'Email' => $rngLast->float(0.01, 0.07),
+            'Display' => $rngLast->float(0.01, 0.06),
+            default => $rngLast->float(0.02, 0.10),
+        };
+        $weightsThis[] = $baseThis;
+        $weightsLast[] = $baseLast;
+    }
+
+    $sumThis = array_sum($weightsThis) ?: 1.0;
+    $sumLast = array_sum($weightsLast) ?: 1.0;
+
+    $remainingThis = $thisTotal;
+    $remainingLast = $lastYearTotal;
+
+    $rows = [];
+    foreach ($channels as $i => $name) {
+        $isLast = ($i === count($channels) - 1);
+        $shareThis = $weightsThis[$i] / $sumThis;
+        $shareLast = $weightsLast[$i] / $sumLast;
+
+        $vThis = $isLast ? $remainingThis : (int)floor($thisTotal * $shareThis);
+        $vLast = $isLast ? $remainingLast : (int)floor($lastYearTotal * $shareLast);
+        $remainingThis -= $vThis;
+        $remainingLast -= $vLast;
+
+        $rows[] = [
+            'channel' => $name,
+            'this_month' => max(0, $vThis),
+            'last_year' => max(0, $vLast),
+            'change_pct' => pct_change((float)$vThis, (float)$vLast),
+        ];
+    }
+
+    // Prepend "All visitors" aggregate row (required by Phase 3 structure).
+    array_unshift($rows, [
+        'channel' => 'All visitors',
+        'this_month' => $thisTotal,
+        'last_year' => $lastYearTotal,
+        'change_pct' => pct_change((float)$thisTotal, (float)$lastYearTotal),
+    ]);
+
+    return $rows;
+}
+
+/**
+ * Build a simple day-of-month line chart (this month vs last year same month).
+ * Returns: ['labels'=>[...], 'this_month'=>[...], 'last_year'=>[...], 'label_this_month'=>..., 'label_last_year'=>...]
+ */
+function phase3_build_line_chart(
+    int $projectId,
+    int $year,
+    int $month,
+    float $thisTotal,
+    float $lastYearTotal,
+    string $labelThis,
+    string $labelLast
+): array {
+    $monthStart = sprintf('%04d-%02d-01', $year, $month);
+    $days = (int)date('t', strtotime($monthStart));
+
+    $seedThis = mock_seed_for_period($projectId, $year, $month) ^ 0x1e2d3c4b;
+    $seedLast = mock_seed_for_period($projectId, $year - 1, $month) ^ 0x1e2d3c4b;
+    $rngThis = new DeterministicRng($seedThis);
+    $rngLast = new DeterministicRng($seedLast);
+
+    $labels = [];
+    $seriesThis = [];
+    $seriesLast = [];
+
+    // If this looks like a rate (0..1), generate daily values around the mean (no "sum-to-total" constraint).
+    $isRate = ($thisTotal >= 0.0 && $thisTotal <= 1.0 && $lastYearTotal >= 0.0 && $lastYearTotal <= 1.0);
+
+    // For count-like series, distribute totals into daily values with mild seasonality.
+    $remainingThis = $thisTotal;
+    $remainingLast = $lastYearTotal;
+    for ($d = 1; $d <= $days; $d++) {
+        $labels[] = (string)$d;
+        $isLast = ($d === $days);
+
+        $season = 0.85 + 0.3 * sin(($d / max(1, $days)) * pi() * 2);
+        if ($isRate) {
+            $nThis = max(0.0, min(1.0, $thisTotal * $season * $rngThis->float(0.85, 1.15)));
+            $nLast = max(0.0, min(1.0, $lastYearTotal * $season * $rngLast->float(0.85, 1.15)));
+        } else {
+            $nThis = $isLast ? $remainingThis : max(0.0, ($thisTotal / max(1, $days)) * $season * $rngThis->float(0.7, 1.3));
+            $nLast = $isLast ? $remainingLast : max(0.0, ($lastYearTotal / max(1, $days)) * $season * $rngLast->float(0.7, 1.3));
+        }
+
+        // Keep integer-like series for counts, but allow decimals for rate-ish metrics.
+        $seriesThis[] = $nThis;
+        $seriesLast[] = $nLast;
+
+        if (!$isRate) {
+            $remainingThis -= $nThis;
+            $remainingLast -= $nLast;
+        }
+    }
+
+    return [
+        'labels' => $labels,
+        'this_month' => $seriesThis,
+        'last_year' => $seriesLast,
+        'label_this_month' => $labelThis,
+        'label_last_year' => $labelLast,
+    ];
+}
+
+function phase3_build_section(
+    int $projectId,
+    int $year,
+    int $month,
+    string $title,
+    string $metricLabel,
+    string $metricFormat,
+    float $thisValue,
+    float $lastYearValue,
+    array $channels
+): array {
+    $labelThis = sprintf('%04d-%02d', $year, $month);
+    $labelLast = sprintf('%04d-%02d', $year - 1, $month);
+    return [
+        'title' => $title,
+        'metric' => [
+            'label' => $metricLabel,
+            'format' => $metricFormat, // 'int' | 'money' | 'pct' | 'seconds'
+        ],
+        'summary' => [
+            'change_pct' => pct_change($thisValue, $lastYearValue),
+            'this_month' => $thisValue,
+            'last_year' => $lastYearValue,
+        ],
+        'chart' => phase3_build_line_chart(
+            $projectId,
+            $year,
+            $month,
+            $thisValue,
+            $lastYearValue,
+            $labelThis,
+            $labelLast
+        ),
+        'channels' => $channels,
+    ];
+}
+
 function generate_report_snapshot(PDO $pdo, array $project, int $year, int $month): array
 {
     $projectId = (int)$project['id'];
@@ -75,182 +307,155 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     $workSummary = $notesStmt->fetchColumn();
     $workSummary = is_string($workSummary) ? $workSummary : '';
 
-    $analytics = mock_generate_report_data($projectId, $year, $month, $includeSales);
-
-    // Phase 2.1 snapshot metadata (never include secrets).
-    // IMPORTANT: In Phase 2.1, ONLY visitors_overview may be REAL (GA4). Everything else is MOCK.
-    $meta = [
-        'generatedAt' => gmdate('c'),
-        'mode' => 'MOCK',
-        // Keep for backward compatibility with older snapshots/UI code.
-        'ga4Used' => false,
-        'sections' => [
-            'visitors_overview' => ['source' => 'MOCK', 'ok' => true],
-            'traffic_channels' => ['source' => 'MOCK', 'ok' => true],
-            'visitor_behavior' => ['source' => 'MOCK', 'ok' => true],
-            'sales' => ['source' => 'MOCK', 'ok' => true],
-            'seo_summary' => ['source' => 'MOCK', 'ok' => true],
-            'email_marketing' => ['source' => 'MOCK', 'ok' => true],
-            'affiliate' => ['source' => 'MOCK', 'ok' => true],
-        ],
-    ];
+    // Phase 3: structure is FINAL, data can stay MOCK. No Google APIs in Phase 3.
     $errors = [];
     $reportStatus = 'READY';
-    $periodStr = sprintf('%04d-%02d', $year, $month);
 
-    // Build month ranges.
-    $monthStart = sprintf('%04d-%02d-01', $year, $month);
-    $monthEnd = (string)date('Y-m-t', strtotime($monthStart));
-    $lastYearStart = sprintf('%04d-%02d-01', $year - 1, $month);
-    $lastYearEnd = (string)date('Y-m-t', strtotime($lastYearStart));
+    $this = mock_generate_report_data($projectId, $year, $month, $includeSales);
+    $last = mock_generate_report_data($projectId, $year - 1, $month, $includeSales);
 
-    $ga4PropertyId = isset($project['ga4_property_id']) ? trim((string)$project['ga4_property_id']) : '';
-    $keyPath = ga4_resolve_path((string)GOOGLE_SA_KEY_PATH);
-    $ga4Configured = (bool)GA4_ENABLED && $keyPath !== '' && is_file($keyPath);
-    $ga4Attempted = false;
+    $thisVisitors = (array)($this['visitors_overview'] ?? []);
+    $lastVisitors = (array)($last['visitors_overview'] ?? []);
+    $usersThis = phase3_safe_int($thisVisitors['users'] ?? 0, 0);
+    $usersLast = phase3_safe_int($lastVisitors['users'] ?? 0, max(0, (int)round($usersThis / 1.12)));
 
-    // Only attempt GA4 if configured AND project has property id.
-    if ($ga4Configured && $ga4PropertyId !== '') {
-        $ga4Attempted = true;
-        $thisMonth = null;
-        try {
-            $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
-        } catch (Throwable $e) {
-            log_error('GA4 section failed', [
-                'project_id' => $projectId,
-                'property_id' => $ga4PropertyId,
-                'period' => $periodStr,
-                'error' => $e->getMessage(),
-            ]);
-            $thisMonth = ['ok' => false, 'error' => ['message' => 'GA4 request threw an exception.']];
-        }
-        if (is_array($thisMonth) && !($thisMonth['ok'] ?? false)) {
-            $msg = (string)(($thisMonth['error']['message'] ?? '') ?: 'GA4 request failed.');
-            log_error('GA4 section failed', [
-                'project_id' => $projectId,
-                'property_id' => $ga4PropertyId,
-                'period' => $periodStr,
-                'error' => $msg,
-            ]);
-        }
-        if ($thisMonth['ok']) {
-            $lastYear = null;
-            try {
-                $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
-            } catch (Throwable $e) {
-                log_error('GA4 section failed', [
-                    'project_id' => $projectId,
-                    'property_id' => $ga4PropertyId,
-                    'period' => $periodStr,
-                    'error' => $e->getMessage(),
-                ]);
-                $lastYear = ['ok' => false, 'error' => ['message' => 'GA4 request threw an exception.']];
-            }
-            if (is_array($lastYear) && !($lastYear['ok'] ?? false)) {
-                $msg = (string)(($lastYear['error']['message'] ?? '') ?: 'GA4 request failed.');
-                log_error('GA4 section failed', [
-                    'project_id' => $projectId,
-                    'property_id' => $ga4PropertyId,
-                    'period' => $periodStr,
-                    'error' => $msg,
-                ]);
-            }
-            if ($lastYear['ok']) {
-                $meta['mode'] = 'REAL+MOCK';
-                $meta['ga4Used'] = true;
-                $meta['sections']['visitors_overview'] = ['source' => 'GA4', 'ok' => true];
+    $sessionsThis = phase3_safe_int($thisVisitors['sessions'] ?? 0, 0);
+    $sessionsLast = phase3_safe_int($lastVisitors['sessions'] ?? 0, max(0, (int)round($sessionsThis / 1.12)));
 
-                $curTotals = (array)$thisMonth['totals'];
-                $prevTotals = (array)$lastYear['totals'];
-                $analytics['visitors_overview'] = [
-                    'totals' => $curTotals,
-                    'daily' => (array)$thisMonth['daily'],
-                    'last_year' => [
-                        'totals' => $prevTotals,
-                        'daily' => (array)$lastYear['daily'],
-                    ],
-                    'change_pct' => [
-                        'users' => pct_change((float)($curTotals['users'] ?? null), (float)($prevTotals['users'] ?? null)),
-                        'new_users' => pct_change((float)($curTotals['new_users'] ?? null), (float)($prevTotals['new_users'] ?? null)),
-                        'sessions' => pct_change((float)($curTotals['sessions'] ?? null), (float)($prevTotals['sessions'] ?? null)),
-                    ],
-                ];
-            } else {
-                $code = null;
-                if (isset($lastYear['error']) && is_array($lastYear['error'])) {
-                    $details = isset($lastYear['error']['details']) && is_array($lastYear['error']['details']) ? (array)$lastYear['error']['details'] : [];
-                    $code = $details['http'] ?? ($details['status'] ?? null);
-                }
-                $errors['ga4'] = [
-                    'message' => 'GA4 is configured but last-year comparison failed; using mock visitors overview.',
-                    'code' => $code,
-                ];
-                $reportStatus = 'PARTIAL';
-                $meta['sections']['visitors_overview'] = [
-                    'source' => 'MOCK',
-                    'ok' => false,
-                    'error' => (string)($errors['ga4']['message'] ?? 'GA4 failed; using mock.'),
-                ];
-            }
-        } else {
-            $code = null;
-            if (isset($thisMonth['error']) && is_array($thisMonth['error'])) {
-                $details = isset($thisMonth['error']['details']) && is_array($thisMonth['error']['details']) ? (array)$thisMonth['error']['details'] : [];
-                $code = $details['http'] ?? ($details['status'] ?? null);
-            }
-            $errors['ga4'] = [
-                'message' => 'GA4 is configured but failed to fetch visitors overview; using mock visitors overview.',
-                'code' => $code,
-            ];
-            $reportStatus = 'PARTIAL';
-            $meta['sections']['visitors_overview'] = [
-                'source' => 'MOCK',
-                'ok' => false,
-                'error' => (string)($errors['ga4']['message'] ?? 'GA4 failed; using mock.'),
-            ];
-        }
-    }
+    $engRateThis = phase3_safe_float($thisVisitors['engagement_rate'] ?? 0.0, 0.0);
+    $engRateLast = phase3_safe_float($lastVisitors['engagement_rate'] ?? 0.0, max(0.0, min(1.0, $engRateThis - 0.04)));
 
-    // If GA4 not used, normalize mock visitors overview to the Phase 2 structure (totals+daily).
-    if (!isset($analytics['visitors_overview']['totals']) || !is_array($analytics['visitors_overview']['totals'] ?? null)) {
-        $analytics['visitors_overview'] = mock_visitors_overview_to_phase2(
-            $projectId,
-            $year,
-            $month,
-            (array)($analytics['visitors_overview'] ?? [])
-        );
-    }
+    $salesThis = is_array($this['sales'] ?? null) ? (array)$this['sales'] : null;
+    $salesLast = is_array($last['sales'] ?? null) ? (array)$last['sales'] : null;
+    $revThis = $includeSales ? phase3_safe_float($salesThis['revenue'] ?? 0.0, 0.0) : 0.0;
+    $revLast = $includeSales ? phase3_safe_float($salesLast['revenue'] ?? 0.0, max(0.0, $revThis / 1.10)) : 0.0;
 
-    // If GA4 was not attempted (not configured), keep visitors_overview marked as MOCK+ok.
-    // If GA4 was attempted and failed, visitors_overview meta is already marked ok=false above.
-    if (!$ga4Attempted && (($meta['sections']['visitors_overview']['source'] ?? 'MOCK') !== 'GA4')) {
-        $meta['sections']['visitors_overview'] = ['source' => 'MOCK', 'ok' => true];
-    }
+    $seoThis = (array)($this['seo_summary'] ?? []);
+    $seoLast = (array)($last['seo_summary'] ?? []);
+    $clicksThis = (float)phase3_safe_int($seoThis['clicks'] ?? 0, 0);
+    $clicksLast = (float)phase3_safe_int($seoLast['clicks'] ?? 0, max(0, (int)round($clicksThis / 1.15)));
 
-    return [
-        'version' => 'phase2',
-        'generated_at_utc' => gmdate('c'),
+    // Goals: Phase 3 is MOCK but structure is final. Tie goal completions to sessions.
+    $seedGoalsThis = mock_seed_for_period($projectId, $year, $month) ^ 0x0f0e0d0c;
+    $seedGoalsLast = mock_seed_for_period($projectId, $year - 1, $month) ^ 0x0f0e0d0c;
+    $rngGoalsThis = new DeterministicRng($seedGoalsThis);
+    $rngGoalsLast = new DeterministicRng($seedGoalsLast);
+    $goalRateThis = $rngGoalsThis->float(0.008, 0.045);
+    $goalRateLast = $rngGoalsLast->float(0.008, 0.045);
+    $goalsThis = (float)max(0, (int)round($sessionsThis * $goalRateThis));
+    $goalsLast = (float)max(0, (int)round($sessionsLast * $goalRateLast));
+
+    $meta = [
+        'generatedAt' => gmdate('c'),
+        'schemaVersion' => 'phase3',
+        'mode' => 'MOCK',
+        'reportStatus' => $reportStatus,
         'project' => [
             'id' => $projectId,
             'name' => (string)$project['name'],
-            'ga4_property_id' => $project['ga4_property_id'] ?? null,
-            'gsc_site_url' => $project['gsc_site_url'] ?? null,
-            'show_sales_section' => $includeSales,
+            'showSalesSection' => $includeSales,
         ],
         'period' => [
             'year' => $year,
             'month' => $month,
         ],
+    ];
+
+    $visitorsChannels = phase3_build_channel_breakdown($projectId, $year, $month, $usersThis, $usersLast);
+    $behaviorChannels = phase3_build_channel_breakdown($projectId, $year, $month, $sessionsThis, $sessionsLast);
+    $salesChannels = phase3_build_channel_breakdown($projectId, $year, $month, (int)round($revThis), (int)round($revLast));
+    $goalsChannels = phase3_build_channel_breakdown($projectId, $year, $month, (int)round($goalsThis), (int)round($goalsLast));
+    $seoChannels = phase3_build_channel_breakdown($projectId, $year, $month, (int)round($clicksThis), (int)round($clicksLast));
+
+    $snapshot = [
         'meta' => $meta,
-        'errors' => $errors,
+        'overview' => [
+            'title' => 'Overview',
+            'kpis' => [
+                ['label' => 'Users', 'value' => $usersThis],
+                ['label' => 'Sessions', 'value' => $sessionsThis],
+                ['label' => 'Engagement rate', 'value' => $engRateThis],
+                ['label' => 'Revenue', 'value' => $includeSales ? $revThis : null],
+            ],
+        ],
+        'visitors' => phase3_build_section(
+            $projectId,
+            $year,
+            $month,
+            'Apsilankymų duomenys',
+            'Users',
+            'int',
+            (float)$usersThis,
+            (float)$usersLast,
+            $visitorsChannels
+        ),
+        'behavior' => phase3_build_section(
+            $projectId,
+            $year,
+            $month,
+            'Lankytojų elgesys',
+            'Engagement rate',
+            'pct',
+            $engRateThis,
+            $engRateLast,
+            $behaviorChannels
+        ),
+        'sales' => $includeSales
+            ? phase3_build_section(
+                $projectId,
+                $year,
+                $month,
+                'Pardavimų duomenys',
+                'Revenue',
+                'money',
+                $revThis,
+                $revLast,
+                $salesChannels
+            )
+            : [
+                'title' => 'Pardavimų duomenys',
+                'visible' => false,
+                'metric' => ['label' => 'Revenue', 'format' => 'money'],
+                'summary' => ['change_pct' => null, 'this_month' => null, 'last_year' => null],
+                'chart' => ['labels' => [], 'this_month' => [], 'last_year' => [], 'label_this_month' => '', 'label_last_year' => ''],
+                'channels' => [],
+            ],
+        'goals' => phase3_build_section(
+            $projectId,
+            $year,
+            $month,
+            'Įgyvendinti tikslai',
+            'Goal completions',
+            'int',
+            $goalsThis,
+            $goalsLast,
+            $goalsChannels
+        ),
+        'seo' => phase3_build_section(
+            $projectId,
+            $year,
+            $month,
+            'SEO',
+            'Clicks',
+            'int',
+            $clicksThis,
+            $clicksLast,
+            $seoChannels
+        ),
         'notes' => [
             'work_summary' => $workSummary,
         ],
-        // Phase 2 naming (while keeping Phase 1 structure under analytics.*)
-        'visitorsOverview' => $analytics['visitors_overview'] ?? null,
-        'analytics' => $analytics,
-        '_report_status' => $reportStatus,
+        'errors' => $errors,
     ];
+
+    // Ensure all required top-level keys exist (stable schema contract).
+    foreach (['meta', 'overview', 'visitors', 'behavior', 'sales', 'goals', 'seo', 'notes', 'errors'] as $k) {
+        if (!array_key_exists($k, $snapshot)) {
+            $snapshot[$k] = null;
+        }
+    }
+
+    return $snapshot;
 }
 
 function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, string $status, array $snapshot): void
