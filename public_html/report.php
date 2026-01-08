@@ -76,15 +76,15 @@ function report_fetch_latest_ready(PDO $pdo, int $projectId): ?array
     return $row ? (array)$row : null;
 }
 
-function report_contract_pct_change(?float $this, ?float $last): ?float
+function report_contract_pct_change(?float $thisValue, ?float $last): ?float
 {
-    if ($this === null || $last === null) {
+    if ($thisValue === null || $last === null) {
         return null;
     }
     if ($last == 0.0) {
         return null;
     }
-    return ($this - $last) / $last;
+    return ($thisValue - $last) / $last;
 }
 
 function report_contract_make_timeseries(array $labels, array $thisArr, array $lastArr): array
@@ -96,11 +96,11 @@ function report_contract_make_timeseries(array $labels, array $thisArr, array $l
     ];
 }
 
-function report_contract_make_metric(string $label, mixed $this, mixed $last, string $format, string $unit = ''): array
+function report_contract_make_metric(string $label, mixed $thisValue, mixed $last, string $format, string $unit = ''): array
 {
     return [
         'label' => $label,
-        'this' => $this,
+        'this' => $thisValue,
         'last' => $last,
         'format' => $format,
         'unit' => $unit,
@@ -219,16 +219,24 @@ function normalize_report_contract(array $snapshot, array $row): array
     return $base;
 }
 
-$reportId = safe_int($_GET['id'] ?? 0, 0);
-$projectIdParam = safe_int($_GET['project_id'] ?? 0, 0);
-$yearParam = safe_int($_GET['year'] ?? 0, 0);
-$monthParam = safe_int($_GET['month'] ?? 0, 0);
+$reportId = safe_int($_GET['id'] ?? null, 0);
+$projectIdParam = safe_int($_GET['project_id'] ?? null, 0);
+$yearParam = safe_int($_GET['year'] ?? null, 0);
+$monthParam = safe_int($_GET['month'] ?? null, 0);
+$hasExplicitPeriod = array_key_exists('year', $_GET) || array_key_exists('month', $_GET);
+$validPeriod = ($yearParam >= 2000 && $yearParam <= 2100 && $monthParam >= 1 && $monthParam <= 12);
 
 $row = null;
 if ($reportId > 0) {
     $row = report_fetch_row_by_id($pdo, $reportId);
-} elseif ($projectIdParam > 0 && $yearParam >= 2000 && $yearParam <= 2100 && $monthParam >= 1 && $monthParam <= 12) {
+} elseif ($projectIdParam > 0 && $hasExplicitPeriod && $validPeriod) {
     $row = report_fetch_row_by_project_period($pdo, $projectIdParam, $yearParam, $monthParam);
+} elseif ($projectIdParam > 0 && $hasExplicitPeriod && !$validPeriod) {
+    http_response_code(200);
+    render_header('Report');
+    echo '<div class="card"><p>Report not available for selected month.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    render_footer();
+    exit;
 } elseif ($projectIdParam > 0) {
     $row = report_fetch_latest_ready($pdo, $projectIdParam);
 } else {
@@ -240,9 +248,9 @@ if ($reportId > 0) {
 }
 
 if (!$row) {
-    http_response_code(404);
+    http_response_code(200);
     render_header('Report');
-    echo '<div class="card"><p>Report not found.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    echo '<div class="card"><p>Report not available for selected month.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
     render_footer();
     exit;
 }
@@ -276,7 +284,7 @@ if (is_string($dataJson) && $dataJson !== '') {
     $snapshot = json_decode($dataJson, true);
 }
 if (!is_array($snapshot)) {
-    echo '<div class="card"><p>Report data is missing or invalid.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
+    echo '<div class="card"><p>Report data is invalid/corrupted.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
     render_footer();
     exit;
 }
