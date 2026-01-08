@@ -77,11 +77,22 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
 
     $analytics = mock_generate_report_data($projectId, $year, $month, $includeSales);
 
-    // Phase 2 meta/errors container (never include secrets).
+    // Phase 2.1 snapshot metadata (never include secrets).
+    // IMPORTANT: In Phase 2.1, ONLY visitors_overview may be REAL (GA4). Everything else is MOCK.
     $meta = [
-        'mode' => 'MOCK',
         'generatedAt' => gmdate('c'),
+        'mode' => 'MOCK',
+        // Keep for backward compatibility with older snapshots/UI code.
         'ga4Used' => false,
+        'sections' => [
+            'visitors_overview' => ['source' => 'MOCK', 'ok' => true],
+            'traffic_channels' => ['source' => 'MOCK', 'ok' => true],
+            'visitor_behavior' => ['source' => 'MOCK', 'ok' => true],
+            'sales' => ['source' => 'MOCK', 'ok' => true],
+            'seo_summary' => ['source' => 'MOCK', 'ok' => true],
+            'email_marketing' => ['source' => 'MOCK', 'ok' => true],
+            'affiliate' => ['source' => 'MOCK', 'ok' => true],
+        ],
     ];
     $errors = [];
     $reportStatus = 'READY';
@@ -95,15 +106,18 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     $ga4PropertyId = isset($project['ga4_property_id']) ? trim((string)$project['ga4_property_id']) : '';
     $keyPath = ga4_resolve_path((string)GOOGLE_SA_KEY_PATH);
     $ga4Configured = (bool)GA4_ENABLED && $keyPath !== '' && is_file($keyPath);
+    $ga4Attempted = false;
 
     // Only attempt GA4 if configured AND project has property id.
     if ($ga4Configured && $ga4PropertyId !== '') {
+        $ga4Attempted = true;
         $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
         if ($thisMonth['ok']) {
             $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
             if ($lastYear['ok']) {
                 $meta['mode'] = 'REAL+MOCK';
                 $meta['ga4Used'] = true;
+                $meta['sections']['visitors_overview'] = ['source' => 'GA4', 'ok' => true];
 
                 $curTotals = (array)$thisMonth['totals'];
                 $prevTotals = (array)$lastYear['totals'];
@@ -126,6 +140,11 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                     'details' => $lastYear['error'] ?? null,
                 ];
                 $reportStatus = 'PARTIAL';
+                $meta['sections']['visitors_overview'] = [
+                    'source' => 'MOCK',
+                    'ok' => false,
+                    'error' => (string)($errors['ga4']['message'] ?? 'GA4 failed; using mock.'),
+                ];
             }
         } else {
             $errors['ga4'] = [
@@ -133,6 +152,11 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 'details' => $thisMonth['error'] ?? null,
             ];
             $reportStatus = 'PARTIAL';
+            $meta['sections']['visitors_overview'] = [
+                'source' => 'MOCK',
+                'ok' => false,
+                'error' => (string)($errors['ga4']['message'] ?? 'GA4 failed; using mock.'),
+            ];
         }
     }
 
@@ -144,6 +168,12 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             $month,
             (array)($analytics['visitors_overview'] ?? [])
         );
+    }
+
+    // If GA4 was not attempted (not configured), keep visitors_overview marked as MOCK+ok.
+    // If GA4 was attempted and failed, visitors_overview meta is already marked ok=false above.
+    if (!$ga4Attempted && (($meta['sections']['visitors_overview']['source'] ?? 'MOCK') !== 'GA4')) {
+        $meta['sections']['visitors_overview'] = ['source' => 'MOCK', 'ok' => true];
     }
 
     return [

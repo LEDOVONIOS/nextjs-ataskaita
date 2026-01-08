@@ -170,3 +170,61 @@ input:focus, select:focus, textarea:focus{border-color:rgba(79,140,255,.5); box-
 
 canvas{max-width:100%}
 
+/* Phase 2.1: Report sidebar + REAL/MOCK source badges */
+.report-layout{
+  display:grid;
+  grid-template-columns: 260px 1fr;
+  gap:12px;
+  align-items:start;
+}
+@media (max-width: 900px){
+  .report-layout{grid-template-columns:1fr}
+}
+
+.report-sidebar{position:sticky; top:70px}
+@media (max-width: 900px){
+  .report-sidebar{position:static}
+}
+
+.sidebar-card{margin-top:0}
+.sidebar-title{font-weight:900; margin-bottom:8px}
+.sidebar-meta{font-size:13px; line-height:1.45; margin-bottom:10px}
+.sidebar-nav{display:flex; flex-direction:column; gap:6px}
+.sidebar-link{
+  text-decoration:none;
+  padding:8px 10px;
+  border-radius:12px;
+  border:1px solid transparent;
+  color:var(--text);
+}
+.sidebar-link:hover{border-color:var(--border); background:rgba(255,255,255,.04)}
+.sidebar-link.is-active{
+  border-color:rgba(79,140,255,.35);
+  background: linear-gradient(135deg, rgba(79,140,255,.22), rgba(110,231,255,.12));
+}
+
+.report-section{scroll-margin-top:84px}
+.report-section__title{
+  margin:10px 0 2px;
+  font-weight:900;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  font-size:12px;
+}
+
+.source-badge{
+  display:inline-block;
+  margin-left:8px;
+  padding:3px 9px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  font-size:11px;
+  font-weight:900;
+  color:var(--muted);
+  vertical-align:middle;
+}
+.source-badge--real{color:var(--ok); border-color:rgba(52,211,153,.35)}
+.source-badge--mock{color:rgba(232,238,252,.65); border-color:rgba(255,255,255,.12)}
+
