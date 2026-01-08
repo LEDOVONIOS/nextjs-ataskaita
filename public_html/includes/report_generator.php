@@ -260,6 +260,16 @@ function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, 
         throw new RuntimeException('Failed to encode JSON snapshot');
     }
 
+    upsert_monthly_report_json($pdo, $projectId, $year, $month, $status, $json);
+}
+
+function upsert_monthly_report_error(PDO $pdo, int $projectId, int $year, int $month): void
+{
+    upsert_monthly_report_json($pdo, $projectId, $year, $month, 'ERROR', null);
+}
+
+function upsert_monthly_report_json(PDO $pdo, int $projectId, int $year, int $month, string $status, ?string $json): void
+{
     $allowed = ['READY', 'PARTIAL', 'GENERATING', 'ERROR'];
     if (!in_array($status, $allowed, true)) {
         $status = 'READY';
@@ -268,13 +278,21 @@ function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, 
     // Insert-or-update by unique key (project_id, year, month).
     $sql = "
         INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-        VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), CAST(? AS JSON))
+        VALUES (:pid, :y, :m, :status, UTC_TIMESTAMP(), :json)
         ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            generated_at = UTC_TIMESTAMP(),
-            data_json = CAST(? AS JSON)
+          status = :status2,
+          generated_at = UTC_TIMESTAMP(),
+          data_json = :json2
     ";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([$projectId, $year, $month, $status, $json, $json]);
+    $stmt->execute([
+        ':pid' => $projectId,
+        ':y' => $year,
+        ':m' => $month,
+        ':status' => $status,
+        ':json' => $json,
+        ':status2' => $status,
+        ':json2' => $json,
+    ]);
 }
 
