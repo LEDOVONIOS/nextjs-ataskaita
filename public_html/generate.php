@@ -64,12 +64,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         // Best-effort: mark as ERROR in DB, but never crash while handling the failure.
         try {
-            $err = $pdo->prepare("
-                INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-                VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
-                ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
-            ");
-            $err->execute([$projectId, $year, $month]);
+            upsert_monthly_report_error($pdo, $projectId, $year, $month);
         } catch (Throwable $dbErr) {
             log_error('Failed to record report ERROR status', [
                 'project_id' => $projectId,

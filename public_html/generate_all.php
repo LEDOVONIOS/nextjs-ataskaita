@@ -44,12 +44,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $results[] = ['project' => (string)$project['name'], 'status' => $status === 'PARTIAL' ? 'PARTIAL' : 'OK'];
         } catch (Throwable $e) {
             $fail++;
-            $err = $pdo->prepare("
-                INSERT INTO monthly_reports (project_id, year, month, status, generated_at, data_json)
-                VALUES (?, ?, ?, 'ERROR', UTC_TIMESTAMP(), NULL)
-                ON DUPLICATE KEY UPDATE status = 'ERROR', generated_at = UTC_TIMESTAMP(), data_json = NULL
-            ");
-            $err->execute([$pid, $year, $month]);
+            upsert_monthly_report_error($pdo, $pid, $year, $month);
             $results[] = ['project' => (string)$project['name'], 'status' => 'ERROR'];
         }
     }
