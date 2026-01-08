@@ -161,11 +161,11 @@ function phase3_build_timeseries(
     ];
 }
 
-function phase3_metric(string $label, mixed $this, mixed $last, string $format, string $unit = ''): array
+function phase3_metric(string $label, mixed $currentMonth, mixed $last, string $format, string $unit = ''): array
 {
     return [
         'label' => $label,
-        'this' => $this,
+        'this' => $currentMonth,
         'last' => $last,
         'format' => $format, // int | pct | float1 | seconds | money
         'unit' => $unit,
