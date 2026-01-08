@@ -109,7 +109,7 @@ render_header('Dashboard');
               </td>
               <td class="muted"><?php echo e($generatedAt); ?></td>
               <td>
-                <?php if ($status === 'READY'): ?>
+                <?php if ($status === 'READY' || $status === 'PARTIAL'): ?>
                   <a class="btn btn--small btn--primary" href="<?php echo e(url('/report.php')) . '?id=' . e((string)$rid); ?>">View report</a>
                 <?php else: ?>
                   <span class="muted">—</span>

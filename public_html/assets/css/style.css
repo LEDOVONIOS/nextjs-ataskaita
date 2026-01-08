@@ -119,6 +119,7 @@ code{background:rgba(255,255,255,.06); padding:.1rem .35rem; border-radius:.35re
 }
 .badge--ready, .badge--ok{color:var(--ok); border-color:rgba(52,211,153,.35)}
 .badge--generating{color:var(--warn); border-color:rgba(251,191,36,.35)}
+.badge--partial{color:var(--warn); border-color:rgba(251,191,36,.35)}
 .badge--error{color:var(--danger); border-color:rgba(255,90,122,.35)}
 
 .alert{
@@ -131,6 +132,7 @@ code{background:rgba(255,255,255,.06); padding:.1rem .35rem; border-radius:.35re
 }
 .alert--success{border-color:rgba(52,211,153,.35)}
 .alert--error{border-color:rgba(255,90,122,.35)}
+.alert--warn{border-color:rgba(251,191,36,.45)}
 
 .form-row{display:flex; flex-direction:column; gap:6px; margin:10px 0}
 .form-row label{font-size:13px; color:var(--muted); font-weight:800}

@@ -40,7 +40,12 @@ function render_header(string $title): void
 
     echo '<main class="container">';
     foreach ($flash as $k => $msg) {
-        $class = ($k === 'error') ? 'alert alert--error' : 'alert alert--success';
+        $class = 'alert alert--success';
+        if ($k === 'error') {
+            $class = 'alert alert--error';
+        } elseif ($k === 'warn') {
+            $class = 'alert alert--warn';
+        }
         echo '<div class="' . e($class) . '">' . e((string)$msg) . '</div>';
     }
     echo '<h1 class="page-title">' . e($title) . '</h1>';
@@ -49,7 +54,7 @@ function render_header(string $title): void
 function render_footer(): void
 {
     echo '</main>';
-    echo '<footer class="footer"><div class="container footer__inner">Phase 1 (Mock Analytics). No Google APIs.</div></footer>';
+    echo '<footer class="footer"><div class="container footer__inner">Phase 2: GA4 optional (Visitors Overview) + mock for remaining sections.</div></footer>';
     echo '</body></html>';
 }
 
