@@ -43,7 +43,90 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $snapshot = generate_report_snapshot($pdo, $project, $year, $month);
         $meta = isset($snapshot['meta']) && is_array($snapshot['meta']) ? (array)$snapshot['meta'] : [];
         $status = (string)($meta['reportStatus'] ?? 'READY');
-        upsert_monthly_report($pdo, $projectId, $year, $month, $status, $snapshot);
+        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            log_error('Snapshot json_encode failed', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+                'json_error' => json_last_error_msg(),
+            ]);
+            throw new RuntimeException('Failed to encode report snapshot JSON');
+        }
+
+        $jsonLen = strlen($json);
+        log_info('Snapshot prepared', [
+            'project_id' => $projectId,
+            'year' => $year,
+            'month' => $month,
+            'status' => $status,
+            'jsonLen' => $jsonLen,
+        ]);
+        if ($jsonLen < 5000) {
+            log_warn('Snapshot JSON is smaller than expected', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+                'jsonLen' => $jsonLen,
+                'top_keys' => array_slice(array_keys($snapshot), 0, 25),
+            ]);
+        }
+        if ($jsonLen < 1000) {
+            log_error('Snapshot JSON too small - refusing to write', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+                'jsonLen' => $jsonLen,
+                'top_keys' => array_slice(array_keys($snapshot), 0, 25),
+            ]);
+            throw new RuntimeException('Generated snapshot JSON too small');
+        }
+
+        upsert_monthly_report_json($pdo, $projectId, $year, $month, $status, $json);
+
+        // STEP 1 verification: immediately re-read and validate what we wrote.
+        $verifyStmt = $pdo->prepare('
+            SELECT id, status, generated_at, LENGTH(data_json) AS json_len, data_json
+            FROM monthly_reports
+            WHERE project_id = ? AND year = ? AND month = ?
+            LIMIT 1
+        ');
+        $verifyStmt->execute([$projectId, $year, $month]);
+        $vr = $verifyStmt->fetch();
+        $dbLen = $vr ? (int)($vr['json_len'] ?? 0) : 0;
+        log_info('Snapshot DB write check', [
+            'project_id' => $projectId,
+            'year' => $year,
+            'month' => $month,
+            'status' => $status,
+            'expected_jsonLen' => $jsonLen,
+            'db_jsonLen' => $dbLen,
+            'report_id' => $vr ? (int)($vr['id'] ?? 0) : 0,
+        ]);
+        if (!$vr || !is_string($vr['data_json'] ?? null) || trim((string)$vr['data_json']) === '') {
+            log_error('Snapshot DB row missing/empty after upsert', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+            ]);
+            throw new RuntimeException('Snapshot DB write verification failed');
+        }
+        $decoded = json_decode((string)$vr['data_json'], true);
+        if (!is_array($decoded)) {
+            log_error('Snapshot JSON decode failed after upsert', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+                'json_error' => json_last_error_msg(),
+                'db_jsonLen' => $dbLen,
+            ]);
+            throw new RuntimeException('Snapshot JSON decode verification failed');
+        }
 
         $idStmt = $pdo->prepare('SELECT id FROM monthly_reports WHERE project_id = ? AND year = ? AND month = ? LIMIT 1');
         $idStmt->execute([$projectId, $year, $month]);

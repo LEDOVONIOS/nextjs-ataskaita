@@ -108,6 +108,137 @@ function report_contract_make_metric(string $label, mixed $thisValue, mixed $las
     ];
 }
 
+function report_metric_value(mixed $metric, string $which): mixed
+{
+    if (!is_array($metric)) {
+        return null;
+    }
+    if ($which === 'this') {
+        return $metric['this'] ?? null;
+    }
+    if ($which === 'last') {
+        return $metric['last'] ?? null;
+    }
+    return null;
+}
+
+/**
+ * Ensure the JS UI contract keys exist even for legacy snapshots.
+ * This is a wiring layer only: no layout/styling changes.
+ */
+function report_ensure_ui_contract(array $reportData): array
+{
+    $reportData['sections'] = is_array($reportData['sections'] ?? null) ? (array)$reportData['sections'] : [];
+
+    // Ensure traffic line chart path exists (used by report_ui.js for the main visits chart).
+    $traffic = is_array($reportData['sections']['traffic'] ?? null) ? (array)$reportData['sections']['traffic'] : [];
+    $trafficAll = is_array($traffic['all'] ?? null) ? (array)$traffic['all'] : [];
+    $trafficVisits = is_array($trafficAll['visits'] ?? null) ? (array)$trafficAll['visits'] : [];
+    $trafficVisitsTs = is_array($trafficVisits['timeseries'] ?? null) ? (array)$trafficVisits['timeseries'] : null;
+
+    // Ensure all_visitors_report exists (used by report_ui.js tables/donuts).
+    if (!isset($reportData['sections']['all_visitors_report']) || !is_array($reportData['sections']['all_visitors_report'])) {
+        $visitsTotals = is_array($trafficVisits['totals'] ?? null) ? (array)$trafficVisits['totals'] : [];
+        $beh = is_array($trafficAll['behavior'] ?? null) ? (array)$trafficAll['behavior'] : [];
+        $behTotals = is_array($beh['totals'] ?? null) ? (array)$beh['totals'] : [];
+        $sales = is_array($trafficAll['sales'] ?? null) ? (array)$trafficAll['sales'] : [];
+        $salesTotals = is_array($sales['totals'] ?? null) ? (array)$sales['totals'] : [];
+        $goals = is_array($trafficAll['goals'] ?? null) ? (array)$trafficAll['goals'] : [];
+
+        // Convert "metric objects" into the exact scalar totals used by JS.
+        $usersThis = report_metric_value($visitsTotals['users'] ?? null, 'this');
+        $usersLast = report_metric_value($visitsTotals['users'] ?? null, 'last');
+        $newThis = report_metric_value($visitsTotals['new_users'] ?? null, 'this');
+        $newLast = report_metric_value($visitsTotals['new_users'] ?? null, 'last');
+        $sessThis = report_metric_value($visitsTotals['sessions'] ?? null, 'this');
+        $sessLast = report_metric_value($visitsTotals['sessions'] ?? null, 'last');
+
+        $engThis = report_metric_value($behTotals['engagement_rate'] ?? null, 'this');
+        $engLast = report_metric_value($behTotals['engagement_rate'] ?? null, 'last');
+        $ppsThis = report_metric_value($behTotals['pages_per_session'] ?? null, 'this');
+        $ppsLast = report_metric_value($behTotals['pages_per_session'] ?? null, 'last');
+        $durThis = report_metric_value($behTotals['avg_session_duration_sec'] ?? null, 'this');
+        $durLast = report_metric_value($behTotals['avg_session_duration_sec'] ?? null, 'last');
+
+        $crThis = report_metric_value($salesTotals['conversion_rate'] ?? null, 'this');
+        $crLast = report_metric_value($salesTotals['conversion_rate'] ?? null, 'last');
+        $txnThis = report_metric_value($salesTotals['purchases'] ?? null, 'this');
+        $txnLast = report_metric_value($salesTotals['purchases'] ?? null, 'last');
+        $revThis = report_metric_value($salesTotals['revenue'] ?? null, 'this');
+        $revLast = report_metric_value($salesTotals['revenue'] ?? null, 'last');
+
+        $includeSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
+
+        $reportData['sections']['all_visitors_report'] = [
+            'segment_key' => null,
+            'sources' => [],
+            'timeseries' => $trafficVisitsTs ?: ['labels' => [], 'this' => [], 'last' => []],
+            'visits' => [
+                'totals' => [
+                    'users' => $usersThis,
+                    'new_users' => $newThis,
+                    'sessions' => $sessThis,
+                    'last_users' => $usersLast,
+                    'last_new_users' => $newLast,
+                    'last_sessions' => $sessLast,
+                ],
+                'by_source' => [],
+            ],
+            'behavior' => [
+                'totals' => [
+                    'engagement_rate' => $engThis,
+                    'pages_per_session' => $ppsThis,
+                    'avg_session_duration_sec' => $durThis,
+                    'last_engagement_rate' => $engLast,
+                    'last_pages_per_session' => $ppsLast,
+                    'last_avg_session_duration_sec' => $durLast,
+                ],
+                'by_source' => [],
+            ],
+            'sales' => [
+                'enabled' => $includeSales,
+                'totals' => [
+                    'conversion_rate' => $crThis,
+                    'transactions' => $txnThis,
+                    'revenue' => $revThis,
+                    'last_conversion_rate' => $crLast,
+                    'last_transactions' => $txnLast,
+                    'last_revenue' => $revLast,
+                ],
+                'by_source' => [],
+            ],
+            'goals' => [
+                'excluded_events' => is_array($goals['excluded_events'] ?? null) ? (array)$goals['excluded_events'] : ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
+                'goal_names' => [],
+                'totals_this' => ['sessions' => (int)($sessThis ?? 0), 'goals' => []],
+                'totals_last' => ['sessions' => (int)($sessLast ?? 0), 'goals' => []],
+                'by_source' => [],
+            ],
+            'demographics' => [
+                'gender' => [],
+                'browsers' => [],
+                'devices' => [],
+                'age' => [],
+                'cities' => [],
+            ],
+        ];
+    }
+
+    // If the legacy snapshot only had all_visitors_report-ish data, ensure the main chart path exists too.
+    if (
+        (!isset($reportData['sections']['traffic']) || !is_array($reportData['sections']['traffic']))
+        || !isset($reportData['sections']['traffic']['all']['visits']['timeseries'])
+    ) {
+        $reportData['sections']['traffic'] = is_array($reportData['sections']['traffic'] ?? null) ? (array)$reportData['sections']['traffic'] : [];
+        $reportData['sections']['traffic']['all'] = is_array($reportData['sections']['traffic']['all'] ?? null) ? (array)$reportData['sections']['traffic']['all'] : [];
+        $reportData['sections']['traffic']['all']['visits'] = is_array($reportData['sections']['traffic']['all']['visits'] ?? null) ? (array)$reportData['sections']['traffic']['all']['visits'] : [];
+        $ts = is_array($reportData['sections']['all_visitors_report']['timeseries'] ?? null) ? (array)$reportData['sections']['all_visitors_report']['timeseries'] : ['labels' => [], 'this' => [], 'last' => []];
+        $reportData['sections']['traffic']['all']['visits']['timeseries'] = $ts;
+    }
+
+    return $reportData;
+}
+
 /**
  * Normalize any snapshot into the Phase 3 UI contract:
  *   sections.traffic[preset_key][tab_key] = { timeseries, totals }
@@ -166,6 +297,121 @@ function normalize_report_contract(array $snapshot, array $row): array
         // Preserve any additional section payloads (e.g. Phase 3 "all visitors report" extras).
         $base['sections'] = (array)$snapshot['sections'] + $base['sections'];
         $base['sections']['traffic'] = (array)$snapshot['sections']['traffic'];
+        return $base;
+    }
+
+    // Legacy snapshot shape (pre-Phase-3.1): top-level keys like "visits", "behavior", "sales", "goals", "demographics", "gsc".
+    // Map into the current UI contract expected by report_ui.js.
+    if (
+        !isset($snapshot['sections'])
+        && (isset($snapshot['visits']) || isset($snapshot['behavior']) || isset($snapshot['sales']) || isset($snapshot['goals']) || isset($snapshot['gsc']))
+    ) {
+        $base['meta'] = is_array($snapshot['meta'] ?? null) ? (array)$snapshot['meta'] + $base['meta'] : $base['meta'];
+        $base['period'] = is_array($snapshot['period'] ?? null) ? (array)$snapshot['period'] + $base['period'] : $base['period'];
+        $base['project'] = is_array($snapshot['project'] ?? null) ? (array)$snapshot['project'] + $base['project'] : $base['project'];
+
+        $visits = is_array($snapshot['visits'] ?? null) ? (array)$snapshot['visits'] : [];
+        $behavior = is_array($snapshot['behavior'] ?? null) ? (array)$snapshot['behavior'] : [];
+        $sales = is_array($snapshot['sales'] ?? null) ? (array)$snapshot['sales'] : [];
+        $goals = is_array($snapshot['goals'] ?? null) ? (array)$snapshot['goals'] : [];
+        $demo = is_array($snapshot['demographics'] ?? null) ? (array)$snapshot['demographics'] : [];
+
+        $allTs = null;
+        if (isset($snapshot['timeseries']) && is_array($snapshot['timeseries'])) {
+            $allTs = (array)$snapshot['timeseries'];
+        } elseif (isset($visits['timeseries']) && is_array($visits['timeseries'])) {
+            $allTs = (array)$visits['timeseries'];
+        }
+        if (!$allTs) {
+            $allTs = ['labels' => [], 'this' => [], 'last' => []];
+        }
+
+        // Build all_visitors_report for JS tables.
+        $base['sections']['all_visitors_report'] = [
+            'segment_key' => $snapshot['segment_key'] ?? null,
+            'sources' => is_array($snapshot['sources'] ?? null) ? (array)$snapshot['sources'] : [],
+            'timeseries' => $allTs,
+            'visits' => [
+                'totals' => is_array($visits['totals'] ?? null) ? (array)$visits['totals'] : [],
+                'by_source' => is_array($visits['by_source'] ?? null) ? (array)$visits['by_source'] : [],
+            ],
+            'behavior' => [
+                'totals' => is_array($behavior['totals'] ?? null) ? (array)$behavior['totals'] : [],
+                'by_source' => is_array($behavior['by_source'] ?? null) ? (array)$behavior['by_source'] : [],
+            ],
+            'sales' => [
+                'enabled' => isset($sales['enabled']) ? (bool)$sales['enabled'] : ((int)($base['project']['show_sales_section'] ?? 1) === 1),
+                'totals' => is_array($sales['totals'] ?? null) ? (array)$sales['totals'] : [],
+                'by_source' => is_array($sales['by_source'] ?? null) ? (array)$sales['by_source'] : [],
+            ],
+            'goals' => [
+                'excluded_events' => is_array($goals['excluded_events'] ?? null) ? (array)$goals['excluded_events'] : ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
+                'goal_names' => is_array($goals['goal_names'] ?? null) ? (array)$goals['goal_names'] : [],
+                'totals_this' => is_array($goals['totals_this'] ?? null) ? (array)$goals['totals_this'] : ['sessions' => 0, 'goals' => []],
+                'totals_last' => is_array($goals['totals_last'] ?? null) ? (array)$goals['totals_last'] : ['sessions' => 0, 'goals' => []],
+                'by_source' => is_array($goals['by_source'] ?? null) ? (array)$goals['by_source'] : [],
+            ],
+            'demographics' => [
+                'gender' => is_array($demo['gender'] ?? null) ? (array)$demo['gender'] : [],
+                'browsers' => is_array($demo['browsers'] ?? null) ? (array)$demo['browsers'] : [],
+                'devices' => is_array($demo['devices'] ?? null) ? (array)$demo['devices'] : [],
+                'age' => is_array($demo['age'] ?? null) ? (array)$demo['age'] : [],
+                'cities' => is_array($demo['cities'] ?? null) ? (array)$demo['cities'] : [],
+            ],
+        ];
+
+        // Provide the main line chart path used by JS: sections.traffic.all.visits.timeseries.
+        $vt = is_array($base['sections']['all_visitors_report']['visits']['totals'] ?? null) ? (array)$base['sections']['all_visitors_report']['visits']['totals'] : [];
+        $bt = is_array($base['sections']['all_visitors_report']['behavior']['totals'] ?? null) ? (array)$base['sections']['all_visitors_report']['behavior']['totals'] : [];
+        $st = is_array($base['sections']['all_visitors_report']['sales']['totals'] ?? null) ? (array)$base['sections']['all_visitors_report']['sales']['totals'] : [];
+
+        $base['sections']['traffic'] = [
+            'all' => [
+                'visits' => [
+                    'timeseries' => $allTs,
+                    'totals' => [
+                        'users' => report_contract_make_metric('Users', $vt['users'] ?? null, $vt['last_users'] ?? null, 'int'),
+                        'new_users' => report_contract_make_metric('New Users', $vt['new_users'] ?? null, $vt['last_new_users'] ?? null, 'int'),
+                        'sessions' => report_contract_make_metric('Sessions', $vt['sessions'] ?? null, $vt['last_sessions'] ?? null, 'int'),
+                    ],
+                ],
+                'behavior' => [
+                    'timeseries' => ['labels' => [], 'this' => [], 'last' => []],
+                    'totals' => [
+                        'engagement_rate' => report_contract_make_metric('Engagement rate', $bt['engagement_rate'] ?? null, $bt['last_engagement_rate'] ?? null, 'pct', '%'),
+                        'pages_per_session' => report_contract_make_metric('Pages / session', $bt['pages_per_session'] ?? null, $bt['last_pages_per_session'] ?? null, 'float1'),
+                        'avg_session_duration_sec' => report_contract_make_metric('Avg session duration', $bt['avg_session_duration_sec'] ?? null, $bt['last_avg_session_duration_sec'] ?? null, 'seconds', 's'),
+                    ],
+                ],
+                'sales' => [
+                    'timeseries' => ['labels' => [], 'this' => [], 'last' => []],
+                    'totals' => [
+                        // Support both old keys: transactions OR purchases.
+                        'conversion_rate' => report_contract_make_metric('Conversion rate', $st['conversion_rate'] ?? null, $st['last_conversion_rate'] ?? null, 'pct', '%'),
+                        'purchases' => report_contract_make_metric('Purchases', $st['transactions'] ?? ($st['purchases'] ?? null), $st['last_transactions'] ?? ($st['last_purchases'] ?? null), 'int'),
+                        'revenue' => report_contract_make_metric('Revenue (EUR)', $st['revenue'] ?? null, $st['last_revenue'] ?? null, 'money', 'EUR'),
+                    ],
+                ],
+                'goals' => [
+                    'timeseries' => ['labels' => [], 'this' => [], 'last' => []],
+                    'totals' => [],
+                ],
+            ],
+        ];
+
+        // Map SEO payload if present (for SEO tables).
+        if (isset($snapshot['gsc']) && is_array($snapshot['gsc'])) {
+            $base['sections']['seo_report'] = [
+                'work_summary' => (string)($snapshot['work_summary'] ?? ''),
+                'gsc' => (array)$snapshot['gsc'],
+                'keywords' => is_array($snapshot['keywords'] ?? null) ? (array)$snapshot['keywords'] : ['items' => []],
+                'behavior' => is_array($snapshot['seo_behavior'] ?? null) ? (array)$snapshot['seo_behavior'] : ['this' => [], 'last' => []],
+                'sales' => is_array($snapshot['seo_sales'] ?? null) ? (array)$snapshot['seo_sales'] : ['this' => [], 'last' => []],
+                'goals' => is_array($snapshot['seo_goals'] ?? null) ? (array)$snapshot['seo_goals'] : ['excluded_events' => ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'], 'items' => []],
+                'charts' => is_array($snapshot['seo_charts'] ?? null) ? (array)$snapshot['seo_charts'] : [],
+            ];
+        }
+
         return $base;
     }
 
@@ -229,20 +475,36 @@ $monthParam = safe_int($_GET['month'] ?? null, 0);
 $hasExplicitPeriod = array_key_exists('year', $_GET) || array_key_exists('month', $_GET);
 $validPeriod = ($yearParam >= 2000 && $yearParam <= 2100 && $monthParam >= 1 && $monthParam <= 12);
 
+$loadMode = null;
+log_info('Report requested', [
+    'id' => $reportId,
+    'project_id' => $projectIdParam,
+    'year' => $yearParam,
+    'month' => $monthParam,
+    'has_explicit_period' => $hasExplicitPeriod,
+    'valid_period' => $validPeriod,
+    'view' => (string)($_GET['view'] ?? 'all'),
+]);
+
 $row = null;
 if ($reportId > 0) {
+    $loadMode = 'by_id';
     $row = report_fetch_row_by_id($pdo, $reportId);
 } elseif ($projectIdParam > 0 && $hasExplicitPeriod && $validPeriod) {
+    $loadMode = 'by_project_period';
     $row = report_fetch_row_by_project_period($pdo, $projectIdParam, $yearParam, $monthParam);
 } elseif ($projectIdParam > 0 && $hasExplicitPeriod && !$validPeriod) {
+    $loadMode = 'invalid_period';
     http_response_code(200);
     render_header('Report');
     echo '<div class="card"><p>Report not available for selected month.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
     render_footer();
     exit;
 } elseif ($projectIdParam > 0) {
+    $loadMode = 'latest_ready_fallback';
     $row = report_fetch_latest_ready($pdo, $projectIdParam);
 } else {
+    $loadMode = 'missing_selector';
     http_response_code(400);
     render_header('Report');
     echo '<div class="card"><p>Missing report selector. Provide <code>id</code> or <code>project_id</code> (optional <code>year</code>, <code>month</code>).</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
@@ -273,6 +535,34 @@ $month = (int)$row['month'];
 $projectName = (string)$row['project_name'];
 $title = 'Ataskaita: ' . $projectName . ' — ' . $year . '-' . str_pad((string)$month, 2, '0', STR_PAD_LEFT);
 
+$dataJsonLen = is_string($row['data_json'] ?? null) ? strlen((string)$row['data_json']) : 0;
+log_info('Report row loaded', [
+    'load_mode' => $loadMode,
+    'requested' => [
+        'id' => $reportId,
+        'project_id' => $projectIdParam,
+        'year' => $yearParam,
+        'month' => $monthParam,
+    ],
+    'loaded' => [
+        'id' => (int)($row['id'] ?? 0),
+        'project_id' => (int)($row['project_id'] ?? 0),
+        'year' => $year,
+        'month' => $month,
+        'status' => $status,
+        'generated_at' => (string)($row['generated_at'] ?? ''),
+        'data_json_len' => $dataJsonLen,
+    ],
+]);
+if ($loadMode === 'latest_ready_fallback' && $hasExplicitPeriod && $validPeriod) {
+    log_warn('Report fallback used instead of explicit period', [
+        'requested_year' => $yearParam,
+        'requested_month' => $monthParam,
+        'loaded_year' => $year,
+        'loaded_month' => $month,
+    ]);
+}
+
 render_header($title);
 
 if ($status !== 'READY' && $status !== 'PARTIAL') {
@@ -287,12 +577,22 @@ if (is_string($dataJson) && $dataJson !== '') {
     $snapshot = json_decode($dataJson, true);
 }
 if (!is_array($snapshot)) {
+    log_error('Report snapshot JSON decode failed', [
+        'report_id' => (int)($row['id'] ?? 0),
+        'project_id' => (int)($row['project_id'] ?? 0),
+        'year' => (int)($row['year'] ?? 0),
+        'month' => (int)($row['month'] ?? 0),
+        'status' => (string)($row['status'] ?? ''),
+        'data_json_len' => $dataJsonLen,
+        'json_error' => json_last_error_msg(),
+    ]);
     echo '<div class="card"><p>Report data is invalid/corrupted.</p><p><a class="btn" href="' . e(url('/dashboard.php')) . '">Back</a></p></div>';
     render_footer();
     exit;
 }
 
 $reportData = normalize_report_contract($snapshot, $row);
+$reportData = report_ensure_ui_contract($reportData);
 $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
 
 $segmentViews = [
@@ -330,6 +630,26 @@ $reportData['meta'] = is_array($reportData['meta'] ?? null) ? (array)$reportData
 $reportData['meta']['active_view'] = $view;
 $reportData['meta']['active_segment_key'] = $activeSegmentKey;
 $reportData['meta']['active_segment_label'] = $activeSegmentLabel;
+
+// STEP 4: Temporary DEBUG block (ADMIN only).
+if ($role === 'ADMIN') {
+    $keys = array_keys($reportData);
+    $usersSample = null;
+    if (isset($reportData['sections']['all_visitors_report']['visits']['totals']['users'])) {
+        $usersSample = $reportData['sections']['all_visitors_report']['visits']['totals']['users'];
+    }
+    $gscClicksThis = null;
+    if (isset($reportData['sections']['seo_report']['gsc']['clicks']['this'])) {
+        $gscClicksThis = $reportData['sections']['seo_report']['gsc']['clicks']['this'];
+    }
+    echo '<div class="card">';
+    echo '<div class="card__title">DEBUG (admin only)</div>';
+    echo '<div class="muted">jsonLen: <strong>' . e((string)$dataJsonLen) . '</strong></div>';
+    echo '<div class="muted">REPORT_DATA keys: <code>' . e(implode(', ', $keys)) . '</code></div>';
+    echo '<div class="muted">Sample: sections.all_visitors_report.visits.totals.users = <code>' . e(var_export($usersSample, true)) . '</code></div>';
+    echo '<div class="muted">Sample: sections.seo_report.gsc.clicks.this = <code>' . e(var_export($gscClicksThis, true)) . '</code></div>';
+    echo '</div>';
+}
 
 // Save SEO work summary directly into the report snapshot (UI editing for internal users only).
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
