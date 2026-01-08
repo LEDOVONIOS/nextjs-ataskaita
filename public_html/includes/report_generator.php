@@ -518,6 +518,13 @@ function phase3_build_all_visitors_report(
     array $lastYear,
     bool $includeSales
 ): array {
+    [$thisStart, $thisEnd, $lastStart, $lastEnd] = phase3_month_date_ranges_utc($year, $month);
+    $period = [
+        'this_start' => $thisStart,
+        'this_end' => $thisEnd,
+        'last_start' => $lastStart,
+        'last_end' => $lastEnd,
+    ];
     $sources = phase3_all_visitors_sources();
 
     $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|all_visitors_extra')) & 0xFFFFFFFF;
@@ -755,6 +762,7 @@ function phase3_build_all_visitors_report(
     ];
 
     return [
+        'period' => $period,
         'sources' => $sources,
         // Optional for UI: YoY timeseries for "visitors" line chart (users).
         // All-visitors view currently reads timeseries from sections.traffic.all.visits,
@@ -867,6 +875,13 @@ function phase3_build_segment_report(
     array $lastYear,
     bool $includeSales
 ): array {
+    [$thisStart, $thisEnd, $lastStart, $lastEnd] = phase3_month_date_ranges_utc($year, $month);
+    $period = [
+        'this_start' => $thisStart,
+        'this_end' => $thisEnd,
+        'last_start' => $lastStart,
+        'last_end' => $lastEnd,
+    ];
     $sources = phase3_segment_sources($segmentKey);
 
     $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|segment|' . $segmentKey)) & 0xFFFFFFFF;
@@ -1102,6 +1117,7 @@ function phase3_build_segment_report(
     ];
 
     return [
+        'period' => $period,
         'segment_key' => $segmentKey,
         'sources' => $sources,
         'timeseries' => phase3_build_timeseries(
@@ -1160,6 +1176,13 @@ function phase3_build_seo_report(
     bool $includeSales,
     string $workSummary
 ): array {
+    [$thisStart, $thisEnd, $lastStart, $lastEnd] = phase3_month_date_ranges_utc($year, $month);
+    $period = [
+        'this_start' => $thisStart,
+        'this_end' => $thisEnd,
+        'last_start' => $lastStart,
+        'last_end' => $lastEnd,
+    ];
     // Deterministic per period, SEO-only snapshot (no traffic sources).
     $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|seo_report')) & 0xFFFFFFFF;
     $seedLast = (mock_seed_for_period($projectId, $year - 1, $month) ^ crc32('p3|seo_report')) & 0xFFFFFFFF;
@@ -1294,6 +1317,7 @@ function phase3_build_seo_report(
     };
 
     return [
+        'period' => $period,
         'work_summary' => $workSummary,
         'gsc' => [
             'clicks' => ['this' => $clickThis, 'last' => $clickLast],
@@ -1345,6 +1369,13 @@ function phase3_build_ppc_report(
     array $lastYear,
     bool $includeSales
 ): array {
+    [$thisStart, $thisEnd, $lastStart, $lastEnd] = phase3_month_date_ranges_utc($year, $month);
+    $period = [
+        'this_start' => $thisStart,
+        'this_end' => $thisEnd,
+        'last_start' => $lastStart,
+        'last_end' => $lastEnd,
+    ];
     $seedThis = (mock_seed_for_period($projectId, $year, $month) ^ crc32('p3|ppc_report')) & 0xFFFFFFFF;
     $seedLast = (mock_seed_for_period($projectId, $year - 1, $month) ^ crc32('p3|ppc_report')) & 0xFFFFFFFF;
     $rngThis = new DeterministicRng((int)$seedThis);
@@ -1519,6 +1550,7 @@ function phase3_build_ppc_report(
     }
 
     return [
+        'period' => $period,
         'work_summary' => '',
         'visits' => [
             'timeseries' => $visitsTimeseries,
