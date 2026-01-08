@@ -311,11 +311,11 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     $errors = [];
     $reportStatus = 'READY';
 
-    $this = mock_generate_report_data($projectId, $year, $month, $includeSales);
-    $last = mock_generate_report_data($projectId, $year - 1, $month, $includeSales);
+    $thisMonth = mock_generate_report_data($projectId, $year, $month, $includeSales);
+    $lastYear = mock_generate_report_data($projectId, $year - 1, $month, $includeSales);
 
-    $thisVisitors = (array)($this['visitors_overview'] ?? []);
-    $lastVisitors = (array)($last['visitors_overview'] ?? []);
+    $thisVisitors = (array)($thisMonth['visitors_overview'] ?? []);
+    $lastVisitors = (array)($lastYear['visitors_overview'] ?? []);
     $usersThis = phase3_safe_int($thisVisitors['users'] ?? 0, 0);
     $usersLast = phase3_safe_int($lastVisitors['users'] ?? 0, max(0, (int)round($usersThis / 1.12)));
 
@@ -325,13 +325,13 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     $engRateThis = phase3_safe_float($thisVisitors['engagement_rate'] ?? 0.0, 0.0);
     $engRateLast = phase3_safe_float($lastVisitors['engagement_rate'] ?? 0.0, max(0.0, min(1.0, $engRateThis - 0.04)));
 
-    $salesThis = is_array($this['sales'] ?? null) ? (array)$this['sales'] : null;
-    $salesLast = is_array($last['sales'] ?? null) ? (array)$last['sales'] : null;
+    $salesThis = is_array($thisMonth['sales'] ?? null) ? (array)$thisMonth['sales'] : null;
+    $salesLast = is_array($lastYear['sales'] ?? null) ? (array)$lastYear['sales'] : null;
     $revThis = $includeSales ? phase3_safe_float($salesThis['revenue'] ?? 0.0, 0.0) : 0.0;
     $revLast = $includeSales ? phase3_safe_float($salesLast['revenue'] ?? 0.0, max(0.0, $revThis / 1.10)) : 0.0;
 
-    $seoThis = (array)($this['seo_summary'] ?? []);
-    $seoLast = (array)($last['seo_summary'] ?? []);
+    $seoThis = (array)($thisMonth['seo_summary'] ?? []);
+    $seoLast = (array)($lastYear['seo_summary'] ?? []);
     $clicksThis = (float)phase3_safe_int($seoThis['clicks'] ?? 0, 0);
     $clicksLast = (float)phase3_safe_int($seoLast['clicks'] ?? 0, max(0, (int)round($clicksThis / 1.15)));
 
