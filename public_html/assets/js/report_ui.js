@@ -2,47 +2,19 @@
 (function () {
   'use strict';
 
-  var data = window.REPORT_DATA;
-  if (!data || !data.sections || !data.sections.traffic) return;
-
-  var presetNav = document.getElementById('presetNav');
-  var quickTabs = document.getElementById('quickTabs');
-  var sectionsRoot = document.getElementById('sectionsRoot');
-  if (!presetNav || !quickTabs || !sectionsRoot) return;
-
+  var data = window.REPORT_DATA || {};
+  var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
   var project = data.project || {};
   var showSales = !!project.show_sales_section;
-  var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
+  var allReport = (data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null;
+  var charts = Object.create(null);
 
-  var PRESETS = [
-    { key: 'all', label: 'Visų tinklapio lankytojų ataskaita' },
-    { key: 'organic_search', label: 'SEO / Organic Search' },
-    { key: 'paid_search', label: 'Paid Search (PPC)' },
-    { key: 'direct', label: 'Direct' },
-    { key: 'display', label: 'Display' },
-    { key: 'social', label: 'Organic Social / Paid Social' },
-    { key: 'referral', label: 'Referral' },
-    { key: 'email', label: 'Email' },
-    { key: 'affiliate', label: 'Affiliate' }
-  ];
+  if (!allReport) return;
 
-  var TABS = [
-    { key: 'visits', label: 'Apsilankymų duomenys', enabled: true },
-    { key: 'behavior', label: 'Lankytojų elgesys', enabled: true },
-    { key: 'sales', label: 'Pardavimų duomenys', enabled: showSales },
-    { key: 'goals', label: 'Įgyvendinti tikslai', enabled: true }
-  ];
-
-  // Filter to only presets present in JSON (but keep "all" if possible).
-  var availablePresets = PRESETS.filter(function (p) {
-    return !!data.sections.traffic[p.key];
-  });
-  if (!availablePresets.length && data.sections.traffic.all) {
-    availablePresets = [{ key: 'all', label: 'Visų tinklapio lankytojų ataskaita' }];
-  }
-
-  var activePreset = (data.sections.traffic.all ? 'all' : (availablePresets[0] ? availablePresets[0].key : 'all'));
-  var charts = {};
+  var elVisitsTable = document.getElementById('table-visits');
+  var elBehaviorTable = document.getElementById('table-behavior');
+  var elSalesTable = document.getElementById('table-sales');
+  var elGoalsTable = document.getElementById('table-goals');
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -61,36 +33,29 @@
     return num.toLocaleString('lt-LT', { maximumFractionDigits: d, minimumFractionDigits: d });
   }
 
-  function fmtSeconds(sec) {
-    if (sec == null || sec === '' || (typeof sec === 'number' && !isFinite(sec))) return '—';
-    var s = Math.max(0, Math.round(Number(sec)));
-    var m = Math.floor(s / 60);
-    var r = s % 60;
-    if (m <= 0) return String(r) + ' s';
-    return String(m) + ' min ' + String(r) + ' s';
-  }
-
-  function fmtMoneyEUR(v) {
-    if (v == null || v === '' || (typeof v === 'number' && !isFinite(v))) return '—';
-    var num = Number(v);
-    if (!isFinite(num)) return '—';
-    // Keep Phase 3 simple: integer EUR.
-    return '€' + Math.round(num).toLocaleString('lt-LT');
-  }
-
-  function fmtPct(v) {
+  function fmtPctRate(v) {
     if (v == null || v === '' || (typeof v === 'number' && !isFinite(v))) return '—';
     var num = Number(v);
     if (!isFinite(num)) return '—';
     return (num * 100).toFixed(1).replace(/\.0$/, '') + '%';
   }
 
-  function fmtValueByFormat(v, format) {
-    if (format === 'money') return fmtMoneyEUR(v);
-    if (format === 'pct') return fmtPct(v);
-    if (format === 'float1') return fmtNumber(v, 1);
-    if (format === 'seconds') return fmtSeconds(v);
-    return fmtNumber(v, 0);
+  function fmtPctNumber(v) {
+    if (v == null || v === '' || (typeof v === 'number' && !isFinite(v))) return '—';
+    var num = Number(v);
+    if (!isFinite(num)) return '—';
+    return num.toFixed(1).replace(/\.0$/, '') + '%';
+  }
+
+  function fmtMinutesFromSeconds(sec) {
+    if (sec == null || sec === '' || (typeof sec === 'number' && !isFinite(sec))) return '—';
+    var s = Number(sec);
+    if (!isFinite(s)) return '—';
+    var m = s / 60;
+    if (!isFinite(m)) return '—';
+    // show as minutes (min.) with 1 decimal
+    var out = m.toFixed(1).replace(/\.0$/, '');
+    return out.replace('.', ',');
   }
 
   function pctChange(thisVal, lastVal) {
@@ -110,7 +75,7 @@
     var arrow = '→';
     if (ch > 0.0001) { cls = 'report3__delta--up'; arrow = '↑'; }
     else if (ch < -0.0001) { cls = 'report3__delta--down'; arrow = '↓'; }
-    return '<span class="report3__delta ' + cls + '">' + arrow + ' ' + esc(fmtPct(ch)) + '</span>';
+    return '<span class="report3__delta ' + cls + '">' + arrow + ' ' + esc(fmtPctRate(ch)) + '</span>';
   }
 
   function destroyChart(id) {
@@ -120,102 +85,288 @@
     }
   }
 
-  function makeSectionHTML(tabKey, tabLabel) {
-    return '' +
-      '<section class="report3__section report-section" id="sec-' + esc(tabKey) + '">' +
-        '<div class="card">' +
-          '<div class="report3__sectionHead">' +
-            '<div class="report3__sectionTitle">' + esc(tabLabel) + '</div>' +
-            '<div class="report3__sectionRange">' +
-              esc((ranges.this_start || '') + ' – ' + (ranges.this_end || '')) +
-              ' · ' +
-              esc((ranges.last_start || '') + ' – ' + (ranges.last_end || '')) +
-            '</div>' +
-          '</div>' +
-          '<div class="report3__chartWrap">' +
-            '<canvas id="chart-' + esc(tabKey) + '" height="160"></canvas>' +
-            '<div class="report3__legendHint">This month vs last year same month</div>' +
-          '</div>' +
-          '<div class="report3__compare">' +
-            '<div class="table-wrap">' +
-              '<table class="table table--compact" id="table-' + esc(tabKey) + '"></table>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</section>';
+  function scrollToHash(hash) {
+    var el = document.querySelector(hash);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  function renderPresetNav() {
-    presetNav.innerHTML = availablePresets.map(function (p) {
-      var active = (p.key === activePreset) ? ' is-active' : '';
-      return '' +
-        '<a class="report3__presetLink' + active + '" href="#" data-preset="' + esc(p.key) + '">' +
-          '<span class="report3__presetLabel">' + esc(p.label) + '</span>' +
-          '<span class="report3__presetChevron">›</span>' +
-        '</a>';
-    }).join('');
+  function safeArray(v) {
+    return Array.isArray(v) ? v : [];
   }
 
-  function renderQuickTabs() {
-    var tabsHtml = TABS.filter(function (t) { return t.enabled; }).map(function (t) {
-      return '<a class="report3__tab" href="#sec-' + esc(t.key) + '" data-tab="' + esc(t.key) + '">' + esc(t.label) + '</a>';
-    }).join('');
-    quickTabs.innerHTML = tabsHtml;
+  function sourceLabel(key, fallback) {
+    // Ensure required labels even if snapshot used older labels.
+    var overrides = {
+      direct_unknown: 'Tiesiogiai atėję / apsaugoti / neatpažinti'
+    };
+    return overrides[key] || fallback || key || '—';
   }
 
-  function buildComparisonTable(tabData) {
-    var totals = (tabData && tabData.totals) ? tabData.totals : {};
-    var keys = Object.keys(totals);
-    if (!keys.length) {
-      return '<thead><tr><th class="muted">No data</th></tr></thead><tbody><tr><td class="muted">—</td></tr></tbody>';
-    }
-
-    var head = '<thead><tr><th></th>' + keys.map(function (k) {
-      return '<th class="right">' + esc(totals[k].label || k) + '</th>';
+  function makeTableHTML(headers, rowsHtml) {
+    var thead = '<thead><tr>' + headers.map(function (h, idx) {
+      return '<th' + (idx === 0 ? '' : ' class="right"') + '>' + esc(h) + '</th>';
     }).join('') + '</tr></thead>';
-
-    function row(label, kind) {
-      return '<tr><td><strong>' + esc(label) + '</strong></td>' + keys.map(function (k) {
-        var m = totals[k] || {};
-        if (kind === 'change') return '<td class="right">' + deltaBadge(m.this, m.last) + '</td>';
-        if (kind === 'this') return '<td class="right">' + esc(fmtValueByFormat(m.this, m.format)) + '</td>';
-        return '<td class="right">' + esc(fmtValueByFormat(m.last, m.format)) + '</td>';
-      }).join('') + '</tr>';
-    }
-
-    var body = '<tbody>' +
-      row('Pokytis', 'change') +
-      row('Šis laikotarpis', 'this') +
-      row('Praeitų metų tas pats mėn.', 'last') +
-    '</tbody>';
-
-    return head + body;
+    return thead + '<tbody>' + rowsHtml.join('') + '</tbody>';
   }
 
-  function renderChart(tabKey, tabData) {
-    destroyChart(tabKey);
+  function lineRow(label, cells, isStrong) {
+    var first = isStrong ? ('<strong>' + esc(label) + '</strong>') : esc(label);
+    var tds = ['<td>' + first + '</td>'].concat(cells.map(function (c) {
+      return '<td class="right">' + c + '</td>';
+    }));
+    return '<tr>' + tds.join('') + '</tr>';
+  }
+
+  function buildVisitsTable() {
+    if (!elVisitsTable) return;
+
+    var srcs = safeArray(allReport.sources);
+    var totals = (allReport.visits && allReport.visits.totals) ? allReport.visits.totals : {};
+    var bySource = (allReport.visits && allReport.visits.by_source) ? allReport.visits.by_source : {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Lankytojų skaičius (vnt.)',
+      'Naujų lankytojų skaičius (vnt.)',
+      'Apsilankymų kiekis (vnt.)'
+    ];
+
+    var rows = [];
+    rows.push(lineRow('Pokytis', [
+      deltaBadge(totals.users, totals.last_users),
+      deltaBadge(totals.new_users, totals.last_new_users),
+      deltaBadge(totals.sessions, totals.last_sessions)
+    ], true));
+
+    rows.push(lineRow(thisRange, [
+      esc(fmtNumber(totals.users, 0)),
+      esc(fmtNumber(totals.new_users, 0)),
+      esc(fmtNumber(totals.sessions, 0))
+    ], false));
+
+    rows.push(lineRow(lastRange, [
+      esc(fmtNumber(totals.last_users, 0)),
+      esc(fmtNumber(totals.last_new_users, 0)),
+      esc(fmtNumber(totals.last_sessions, 0))
+    ], false));
+
+    for (var i = 0; i < srcs.length; i++) {
+      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+      var label = sourceLabel(k, srcs[i] && srcs[i].label);
+      var s = bySource && k ? (bySource[k] || {}) : {};
+      rows.push(lineRow(label, [
+        esc(fmtNumber(s.users, 0)),
+        esc(fmtNumber(s.new_users, 0)),
+        esc(fmtNumber(s.sessions, 0))
+      ], false));
+    }
+
+    elVisitsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildBehaviorTable() {
+    if (!elBehaviorTable) return;
+
+    var srcs = safeArray(allReport.sources);
+    var totals = (allReport.behavior && allReport.behavior.totals) ? allReport.behavior.totals : {};
+    var bySource = (allReport.behavior && allReport.behavior.by_source) ? allReport.behavior.by_source : {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Įsitraukimo rodiklis (%)',
+      'Puslapiai per apsilankymą (vnt.)',
+      'Vidutinė apsilankymo trukmė (min.)'
+    ];
+
+    var rows = [];
+    rows.push(lineRow('Pokytis', [
+      deltaBadge(totals.engagement_rate, totals.last_engagement_rate),
+      deltaBadge(totals.pages_per_session, totals.last_pages_per_session),
+      deltaBadge(totals.avg_session_duration_sec, totals.last_avg_session_duration_sec)
+    ], true));
+
+    rows.push(lineRow(thisRange, [
+      esc(fmtPctRate(totals.engagement_rate)),
+      esc(fmtNumber(totals.pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(totals.avg_session_duration_sec))
+    ], false));
+
+    rows.push(lineRow(lastRange, [
+      esc(fmtPctRate(totals.last_engagement_rate)),
+      esc(fmtNumber(totals.last_pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(totals.last_avg_session_duration_sec))
+    ], false));
+
+    for (var i = 0; i < srcs.length; i++) {
+      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+      var label = sourceLabel(k, srcs[i] && srcs[i].label);
+      var s = bySource && k ? (bySource[k] || {}) : {};
+      rows.push(lineRow(label, [
+        esc(fmtPctRate(s.engagement_rate)),
+        esc(fmtNumber(s.pages_per_session, 1)),
+        esc(fmtMinutesFromSeconds(s.avg_session_duration_sec))
+      ], false));
+    }
+
+    elBehaviorTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function buildSalesTable() {
+    if (!showSales) return;
+    if (!elSalesTable) return;
+
+    var sales = allReport.sales || {};
+    if (!sales.enabled) {
+      elSalesTable.innerHTML = '<thead><tr><th class="muted">—</th></tr></thead><tbody><tr><td class="muted">Sales section disabled</td></tr></tbody>';
+      return;
+    }
+
+    var srcs = safeArray(allReport.sources);
+    var totals = sales.totals || {};
+    var bySource = sales.by_source || {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = [
+      'Apsilankymų keliai',
+      'Pardavimai (%)',
+      'Pardavimų kiekis (vnt.)',
+      'Gauti pinigai (EUR)'
+    ];
+
+    var rows = [];
+    rows.push(lineRow('Pokytis', [
+      deltaBadge(totals.conversion_rate, totals.last_conversion_rate),
+      deltaBadge(totals.transactions, totals.last_transactions),
+      deltaBadge(totals.revenue, totals.last_revenue)
+    ], true));
+
+    rows.push(lineRow(thisRange, [
+      esc(fmtPctRate(totals.conversion_rate)),
+      esc(fmtNumber(totals.transactions, 0)),
+      esc(fmtNumber(totals.revenue, 0))
+    ], false));
+
+    rows.push(lineRow(lastRange, [
+      esc(fmtPctRate(totals.last_conversion_rate)),
+      esc(fmtNumber(totals.last_transactions, 0)),
+      esc(fmtNumber(totals.last_revenue, 0))
+    ], false));
+
+    for (var i = 0; i < srcs.length; i++) {
+      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+      var label = sourceLabel(k, srcs[i] && srcs[i].label);
+      var s = bySource && k ? (bySource[k] || {}) : {};
+      rows.push(lineRow(label, [
+        esc(fmtPctRate(s.conversion_rate)),
+        esc(fmtNumber(s.transactions, 0)),
+        esc(fmtNumber(s.revenue, 0))
+      ], false));
+    }
+
+    elSalesTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function isExcludedGoal(name, excluded) {
+    if (!name) return true;
+    var n = String(name);
+    for (var i = 0; i < excluded.length; i++) {
+      if (n === String(excluded[i])) return true;
+    }
+    return false;
+  }
+
+  function goalCell(count, sessions) {
+    var c = Number(count);
+    var s = Number(sessions);
+    if (!isFinite(c)) c = 0;
+    if (!isFinite(s)) s = 0;
+    var pct = (s > 0) ? (c / s * 100) : null;
+    var pctText = (pct == null) ? '—' : fmtPctNumber(pct);
+    return esc(fmtNumber(c, 0)) + ' <span class="muted">(' + esc(pctText) + ')</span>';
+  }
+
+  function buildGoalsTable() {
+    if (!elGoalsTable) return;
+
+    var goals = allReport.goals || {};
+    var excluded = safeArray(goals.excluded_events);
+    var goalNames = safeArray(goals.goal_names).filter(function (g) { return !isExcludedGoal(g, excluded); });
+
+    if (!goalNames.length) {
+      elGoalsTable.innerHTML = '<thead><tr><th class="muted">Apsilankymų keliai</th></tr></thead><tbody><tr><td class="muted">Tikslų duomenų nėra.</td></tr></tbody>';
+      return;
+    }
+
+    var srcs = safeArray(allReport.sources);
+    var totalsThis = goals.totals_this || { sessions: 0, goals: {} };
+    var totalsLast = goals.totals_last || { sessions: 0, goals: {} };
+    var bySource = goals.by_source || {};
+
+    var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
+    var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
+
+    var headers = ['Apsilankymų keliai'].concat(goalNames.map(function (g) { return String(g); }));
+    var rows = [];
+
+    rows.push(lineRow(thisRange, goalNames.map(function (g) {
+      var cnt = totalsThis.goals ? totalsThis.goals[g] : 0;
+      return goalCell(cnt, totalsThis.sessions);
+    }), false));
+
+    rows.push(lineRow(lastRange, goalNames.map(function (g) {
+      var cnt = totalsLast.goals ? totalsLast.goals[g] : 0;
+      return goalCell(cnt, totalsLast.sessions);
+    }), false));
+
+    for (var i = 0; i < srcs.length; i++) {
+      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+      var label = sourceLabel(k, srcs[i] && srcs[i].label);
+      var s = bySource && k ? (bySource[k] || {}) : {};
+      var sess = s.sessions || 0;
+      var gMap = s.goals || {};
+      rows.push(lineRow(label, goalNames.map(function (g) {
+        return goalCell(gMap[g] || 0, sess);
+      }), false));
+    }
+
+    elGoalsTable.innerHTML = makeTableHTML(headers, rows);
+  }
+
+  function renderLineChart() {
+    destroyChart('visits_line');
     if (!window.Chart) return;
 
-    var ts = tabData && tabData.timeseries ? tabData.timeseries : null;
+    // Prefer timeseries from traffic/all/visits since it's day-of-month aligned.
+    var ts = null;
+    try {
+      ts = data.sections && data.sections.traffic && data.sections.traffic.all && data.sections.traffic.all.visits
+        ? data.sections.traffic.all.visits.timeseries
+        : null;
+    } catch (e) {}
+
     if (!ts || !Array.isArray(ts.labels)) return;
-
-    var canvas = document.getElementById('chart-' + tabKey);
+    var canvas = document.getElementById('chart-visits-line');
     if (!canvas) return;
-    var c = canvas.getContext('2d');
-    if (!c) return;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-    var labels = ts.labels || [];
-    var a = Array.isArray(ts.this) ? ts.this : [];
-    var b = Array.isArray(ts.last) ? ts.last : [];
-
-    charts[tabKey] = new Chart(c, {
+    charts.visits_line = new Chart(ctx, {
       type: 'line',
       data: {
-        labels: labels,
+        labels: safeArray(ts.labels),
         datasets: [
           {
             label: (data.period && data.period.label) ? data.period.label : 'This month',
-            data: a,
+            data: safeArray(ts.this),
             borderColor: '#4f8cff',
             backgroundColor: 'rgba(79,140,255,.10)',
             tension: 0.25,
@@ -223,7 +374,7 @@
           },
           {
             label: (data.period && data.period.compare_to && data.period.compare_to.label) ? data.period.compare_to.label : 'Last year',
-            data: b,
+            data: safeArray(ts.last),
             borderColor: '#6ee7ff',
             backgroundColor: 'rgba(110,231,255,.10)',
             tension: 0.25,
@@ -240,6 +391,12 @@
         scales: {
           y: {
             beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Lankytojų skaičius (vnt.)',
+              color: 'rgba(232,238,252,0.75)',
+              font: { weight: '700' }
+            },
             grid: { color: 'rgba(255,255,255,0.06)' },
             ticks: { color: 'rgba(232,238,252,0.85)' }
           },
@@ -252,100 +409,107 @@
     });
   }
 
-  function renderSections() {
-    var presetData = data.sections.traffic[activePreset] || data.sections.traffic.all || {};
-    var tabsToRender = TABS.filter(function (t) { return t.enabled; });
-    sectionsRoot.innerHTML = tabsToRender.map(function (t) {
-      return makeSectionHTML(t.key, t.label);
-    }).join('');
+  function renderDoughnut(id, items) {
+    destroyChart(id);
+    if (!window.Chart) return;
 
-    tabsToRender.forEach(function (t) {
-      var tabData = presetData[t.key] || null;
-      var table = document.getElementById('table-' + t.key);
-      if (table) table.innerHTML = buildComparisonTable(tabData);
-      renderChart(t.key, tabData);
-    });
-  }
+    var canvas = document.getElementById('chart-donut-' + id);
+    var legend = document.getElementById('legend-donut-' + id);
+    if (!canvas || !legend) return;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  function scrollToHash(hash) {
-    var el = document.querySelector(hash);
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+    var rows = safeArray(items).map(function (it) {
+      return {
+        label: String(it && it.label != null ? it.label : '—'),
+        value: Number(it && it.value != null ? it.value : 0)
+      };
+    }).filter(function (it) { return isFinite(it.value) && it.value >= 0; });
 
-  function setActiveTab(tabKey) {
-    var tabs = quickTabs.querySelectorAll('.report3__tab');
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].classList.toggle('is-active', tabs[i].getAttribute('data-tab') === tabKey);
-    }
-  }
+    var total = rows.reduce(function (acc, r) { return acc + r.value; }, 0);
+    if (!isFinite(total) || total <= 0) total = 0;
 
-  function setupActiveTabObserver() {
-    var sections = Array.prototype.slice.call(document.querySelectorAll('.report3__section[id]'));
-    if (!sections.length) return;
+    var labels = rows.map(function (r) { return r.label; });
+    var values = rows.map(function (r) { return r.value; });
 
-    if ('IntersectionObserver' in window) {
-      var io = new IntersectionObserver(function (entries) {
-        entries.forEach(function (en) {
-          if (en.isIntersecting) {
-            var id = en.target.id || '';
-            var key = id.replace(/^sec-/, '');
-            setActiveTab(key);
+    var palette = ['#4f8cff', '#6ee7ff', '#a78bfa', '#34d399', '#fbbf24', '#fb7185', '#94a3b8', '#22c55e', '#60a5fa'];
+    var colors = values.map(function (_, idx) { return palette[idx % palette.length]; });
+
+    charts[id] = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderColor: 'rgba(11,18,32,0.0)',
+          borderWidth: 2,
+          hoverOffset: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (context) {
+                var v = Number(context.parsed || 0);
+                var p = (total > 0) ? (v / total * 100) : null;
+                var pctText = (p == null) ? '—' : fmtPctNumber(p);
+                return String(context.label || '') + ': ' + fmtNumber(v, 0) + ' (' + pctText + ')';
+              }
+            }
           }
-        });
-      }, { root: null, rootMargin: '-25% 0px -65% 0px', threshold: 0.01 });
-      sections.forEach(function (s) { io.observe(s); });
-      return;
-    }
-
-    window.addEventListener('scroll', function () {
-      var best = null;
-      var bestTop = -Infinity;
-      for (var i = 0; i < sections.length; i++) {
-        var r = sections[i].getBoundingClientRect();
-        if (r.top < 160 && r.top > bestTop) {
-          bestTop = r.top;
-          best = sections[i];
-        }
+        },
+        cutout: '62%'
       }
-      if (best) setActiveTab(best.id.replace(/^sec-/, ''));
-    }, { passive: true });
+    });
+
+    legend.innerHTML = rows.map(function (r, idx) {
+      var v = r.value;
+      var p = (total > 0) ? (v / total * 100) : null;
+      var pctText = (p == null) ? '—' : fmtPctNumber(p);
+      return '' +
+        '<div class="report3__legendItem">' +
+          '<span class="report3__legendSwatch" style="background:' + esc(colors[idx]) + '"></span>' +
+          '<span class="report3__legendLabel">' + esc(r.label) + '</span>' +
+          '<span class="report3__legendValue">' + esc(fmtNumber(v, 0)) + ' <span class="muted">(' + esc(pctText) + ')</span></span>' +
+        '</div>';
+    }).join('');
   }
 
-  // Clicks
-  document.addEventListener('click', function (e) {
-    var presetLink = e.target && e.target.closest ? e.target.closest('a[data-preset]') : null;
-    if (presetLink) {
-      e.preventDefault();
-      var k = presetLink.getAttribute('data-preset');
-      if (k && k !== activePreset) {
-        activePreset = k;
-        renderPresetNav();
-        renderSections();
-        setupActiveTabObserver();
-      }
-      return;
-    }
+  function renderDonuts() {
+    var d = allReport.demographics || {};
+    renderDoughnut('gender', d.gender);
+    renderDoughnut('browsers', d.browsers);
+    renderDoughnut('devices', d.devices);
+    renderDoughnut('age', d.age);
+  }
 
-    var tabLink = e.target && e.target.closest ? e.target.closest('.report3__tab[href^="#"]') : null;
-    if (tabLink) {
-      var href = tabLink.getAttribute('href');
+  function setupQuickScroll() {
+    document.addEventListener('click', function (e) {
+      var link = e.target && e.target.closest ? e.target.closest('.report3__tab[href^="#"]') : null;
+      if (!link) return;
+      var href = link.getAttribute('href');
       if (!href) return;
       var target = document.querySelector(href);
       if (!target) return;
       e.preventDefault();
       history.replaceState(null, '', href);
       scrollToHash(href);
-    }
-  });
+    });
+  }
 
-  // Initial render
-  renderPresetNav();
-  renderQuickTabs();
-  renderSections();
-  setupActiveTabObserver();
+  // Render everything
+  buildVisitsTable();
+  buildBehaviorTable();
+  buildSalesTable();
+  buildGoalsTable();
+  renderLineChart();
+  renderDonuts();
+  setupQuickScroll();
 
-  // If loaded with a hash, scroll after render.
   if (window.location.hash) {
     setTimeout(function () { scrollToHash(window.location.hash); }, 50);
   }

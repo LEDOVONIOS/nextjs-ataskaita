@@ -300,7 +300,6 @@ $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
     <div class="report3__topTitle">
       <?php echo e($projectName); ?>
       <span class="report3__pill"><?php echo e(sprintf('%04d-%02d', $year, $month)); ?></span>
-      <span class="report3__pill report3__pill--muted">MOCK</span>
     </div>
     <?php
       $dr = (array)($reportData['period']['date_ranges'] ?? []);
@@ -314,14 +313,124 @@ $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
   </div>
 
   <div class="report3__layout">
-    <aside class="report3__sidebar card" aria-label="Channel presets">
-      <div class="report3__sidebarTitle">Ataskaitos kanalai</div>
-      <nav class="report3__presetNav" id="presetNav"></nav>
+    <aside class="report3__sidebar card" aria-label="Report navigation">
+      <div class="report3__sidebarTitle">Ataskaita</div>
+      <nav class="report3__presetNav">
+        <a class="report3__presetLink is-active" href="#" aria-current="page">
+          <span class="report3__presetLabel">Visų tinklalapio lankytojų ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
+      </nav>
     </aside>
 
     <div class="report3__content">
-      <div class="report3__tabs" role="navigation" aria-label="Quick tabs" id="quickTabs"></div>
-      <div id="sectionsRoot"></div>
+      <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
+        <a class="report3__tab" href="#visits">Apsilankymų duomenys</a>
+        <a class="report3__tab" href="#behavior">Lankytojų elgesys</a>
+        <?php if ($showSales): ?>
+          <a class="report3__tab" href="#sales">Pardavimų duomenys</a>
+        <?php endif; ?>
+        <a class="report3__tab" href="#goals">Įgyvendinti tikslai</a>
+      </div>
+
+      <section class="report3__section report-section" id="visits">
+        <div class="card">
+          <div class="report3__sectionHead">
+            <div class="report3__sectionTitle">Apsilankymų duomenys</div>
+            <div class="report3__sectionRange">
+              <?php echo e($thisRange); ?> · <?php echo e($lastRange); ?>
+            </div>
+          </div>
+          <div class="report3__chartWrap">
+            <canvas id="chart-visits-line" height="160"></canvas>
+          </div>
+          <div class="report3__compare">
+            <div class="report3__tableTitle">Visų lankytojų apsilankymų duomenys</div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-visits"></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="report3__section report-section" id="behavior">
+        <div class="card">
+          <div class="report3__sectionHead">
+            <div class="report3__sectionTitle">Lankytojų elgesys</div>
+            <div class="report3__sectionRange">
+              <?php echo e($thisRange); ?> · <?php echo e($lastRange); ?>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table table--compact" id="table-behavior"></table>
+          </div>
+        </div>
+      </section>
+
+      <?php if ($showSales): ?>
+      <section class="report3__section report-section" id="sales">
+        <div class="card">
+          <div class="report3__sectionHead">
+            <div class="report3__sectionTitle">Pardavimų duomenys</div>
+            <div class="report3__sectionRange">
+              <?php echo e($thisRange); ?> · <?php echo e($lastRange); ?>
+            </div>
+          </div>
+          <div class="report3__compare">
+            <div class="report3__tableTitle">Pardavimų duomenys visiems lankytojams</div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-sales"></table>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <section class="report3__section report-section" id="goals">
+        <div class="card">
+          <div class="report3__sectionHead">
+            <div class="report3__sectionTitle">Įgyvendinti tikslai</div>
+            <div class="report3__sectionRange">
+              <?php echo e($thisRange); ?> · <?php echo e($lastRange); ?>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table table--compact" id="table-goals"></table>
+          </div>
+        </div>
+      </section>
+
+      <section class="report3__section report-section" id="bottom-charts">
+        <div class="card">
+          <div class="report3__sectionHead">
+            <div class="report3__sectionTitle">Lankytojai</div>
+            <div class="report3__sectionRange">Vieno laikotarpio pjūvis</div>
+          </div>
+          <div class="report3__donuts">
+            <div class="report3__donut card card--flat">
+              <div class="report3__donutTitle">Lankytojų lytis</div>
+              <canvas id="chart-donut-gender" height="180"></canvas>
+              <div class="report3__donutLegend" id="legend-donut-gender"></div>
+            </div>
+            <div class="report3__donut card card--flat">
+              <div class="report3__donutTitle">Lankytojų naudojamos naršyklės</div>
+              <canvas id="chart-donut-browsers" height="180"></canvas>
+              <div class="report3__donutLegend" id="legend-donut-browsers"></div>
+            </div>
+            <div class="report3__donut card card--flat">
+              <div class="report3__donutTitle">Lankytojų įrenginiai</div>
+              <canvas id="chart-donut-devices" height="180"></canvas>
+              <div class="report3__donutLegend" id="legend-donut-devices"></div>
+            </div>
+            <div class="report3__donut card card--flat">
+              <div class="report3__donutTitle">Lankytojų amžius</div>
+              <canvas id="chart-donut-age" height="180"></canvas>
+              <div class="report3__donutLegend" id="legend-donut-age"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div class="card">
         <div class="card__actions">
           <a class="btn" href="<?php echo e(url('/dashboard.php')); ?>">Back to dashboard</a>
