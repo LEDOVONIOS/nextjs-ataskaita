@@ -167,12 +167,6 @@ $snapshotForJs['meta']['sections'] = $sectionsMeta;
       $msg = (string)($ga4Err['message'] ?? 'Report is PARTIAL.');
       echo e($msg);
     ?>
-    <?php if (!empty($ga4Err['details'])): ?>
-      <details class="muted" style="margin-top:8px">
-        <summary>Details</summary>
-        <pre style="white-space:pre-wrap; margin:8px 0 0"><?php echo e(json_encode($ga4Err['details'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)); ?></pre>
-      </details>
-    <?php endif; ?>
   </div>
 <?php endif; ?>
 

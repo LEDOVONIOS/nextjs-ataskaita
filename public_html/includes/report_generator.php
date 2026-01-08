@@ -96,6 +96,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     ];
     $errors = [];
     $reportStatus = 'READY';
+    $periodStr = sprintf('%04d-%02d', $year, $month);
 
     // Build month ranges.
     $monthStart = sprintf('%04d-%02d-01', $year, $month);
@@ -111,9 +112,49 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     // Only attempt GA4 if configured AND project has property id.
     if ($ga4Configured && $ga4PropertyId !== '') {
         $ga4Attempted = true;
-        $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
+        $thisMonth = null;
+        try {
+            $thisMonth = ga4_get_visitors_overview($ga4PropertyId, $monthStart, $monthEnd);
+        } catch (Throwable $e) {
+            log_error('GA4 section failed', [
+                'project_id' => $projectId,
+                'property_id' => $ga4PropertyId,
+                'period' => $periodStr,
+                'error' => $e->getMessage(),
+            ]);
+            $thisMonth = ['ok' => false, 'error' => ['message' => 'GA4 request threw an exception.']];
+        }
+        if (is_array($thisMonth) && !($thisMonth['ok'] ?? false)) {
+            $msg = (string)(($thisMonth['error']['message'] ?? '') ?: 'GA4 request failed.');
+            log_error('GA4 section failed', [
+                'project_id' => $projectId,
+                'property_id' => $ga4PropertyId,
+                'period' => $periodStr,
+                'error' => $msg,
+            ]);
+        }
         if ($thisMonth['ok']) {
-            $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
+            $lastYear = null;
+            try {
+                $lastYear = ga4_get_visitors_overview($ga4PropertyId, $lastYearStart, $lastYearEnd);
+            } catch (Throwable $e) {
+                log_error('GA4 section failed', [
+                    'project_id' => $projectId,
+                    'property_id' => $ga4PropertyId,
+                    'period' => $periodStr,
+                    'error' => $e->getMessage(),
+                ]);
+                $lastYear = ['ok' => false, 'error' => ['message' => 'GA4 request threw an exception.']];
+            }
+            if (is_array($lastYear) && !($lastYear['ok'] ?? false)) {
+                $msg = (string)(($lastYear['error']['message'] ?? '') ?: 'GA4 request failed.');
+                log_error('GA4 section failed', [
+                    'project_id' => $projectId,
+                    'property_id' => $ga4PropertyId,
+                    'period' => $periodStr,
+                    'error' => $msg,
+                ]);
+            }
             if ($lastYear['ok']) {
                 $meta['mode'] = 'REAL+MOCK';
                 $meta['ga4Used'] = true;
@@ -135,9 +176,14 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                     ],
                 ];
             } else {
+                $code = null;
+                if (isset($lastYear['error']) && is_array($lastYear['error'])) {
+                    $details = isset($lastYear['error']['details']) && is_array($lastYear['error']['details']) ? (array)$lastYear['error']['details'] : [];
+                    $code = $details['http'] ?? ($details['status'] ?? null);
+                }
                 $errors['ga4'] = [
                     'message' => 'GA4 is configured but last-year comparison failed; using mock visitors overview.',
-                    'details' => $lastYear['error'] ?? null,
+                    'code' => $code,
                 ];
                 $reportStatus = 'PARTIAL';
                 $meta['sections']['visitors_overview'] = [
@@ -147,9 +193,14 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 ];
             }
         } else {
+            $code = null;
+            if (isset($thisMonth['error']) && is_array($thisMonth['error'])) {
+                $details = isset($thisMonth['error']['details']) && is_array($thisMonth['error']['details']) ? (array)$thisMonth['error']['details'] : [];
+                $code = $details['http'] ?? ($details['status'] ?? null);
+            }
             $errors['ga4'] = [
                 'message' => 'GA4 is configured but failed to fetch visitors overview; using mock visitors overview.',
-                'details' => $thisMonth['error'] ?? null,
+                'code' => $code,
             ];
             $reportStatus = 'PARTIAL';
             $meta['sections']['visitors_overview'] = [
