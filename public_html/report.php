@@ -296,7 +296,7 @@ $reportData = normalize_report_contract($snapshot, $row);
 $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
 
 $view = safe_string($_GET['view'] ?? 'all', 'all');
-$view = ($view === 'seo') ? 'seo' : 'all';
+$view = in_array($view, ['seo', 'ppc'], true) ? $view : 'all';
 
 // Save SEO work summary directly into the report snapshot (UI editing for internal users only).
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -334,6 +334,32 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         redirect('/report.php?id=' . $rid . '&view=seo');
     }
+    if ($action === 'save_ppc_work_summary') {
+        $work = safe_string($_POST['ppc_work_summary'] ?? '');
+        $rid = (int)($row['id'] ?? 0);
+        if ($rid <= 0) {
+            http_response_code(400);
+            echo 'Bad Request';
+            exit;
+        }
+
+        // Merge into snapshot (do not discard any other sections).
+        $snapshot['sections'] = is_array($snapshot['sections'] ?? null) ? (array)$snapshot['sections'] : [];
+        $snapshot['sections']['ppc_report'] = is_array($snapshot['sections']['ppc_report'] ?? null) ? (array)$snapshot['sections']['ppc_report'] : [];
+        $snapshot['sections']['ppc_report']['work_summary'] = $work;
+
+        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            http_response_code(500);
+            echo 'Failed to encode JSON';
+            exit;
+        }
+
+        $upd = $pdo->prepare('UPDATE monthly_reports SET data_json = ? WHERE id = ? LIMIT 1');
+        $upd->execute([$json, $rid]);
+
+        redirect('/report.php?id=' . $rid . '&view=ppc');
+    }
 }
 ?>
 
@@ -365,6 +391,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
           <span class="report3__presetLabel">Visų tinklalapio lankytojų ataskaita</span>
           <span class="report3__presetChevron">›</span>
         </a>
+        <a class="report3__presetLink <?php echo $view === 'ppc' ? 'is-active' : ''; ?>"
+           href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=ppc'; ?>"
+           <?php echo $view === 'ppc' ? 'aria-current="page"' : ''; ?>>
+          <span class="report3__presetLabel">Mokamos reklamos paieškoje ataskaita</span>
+          <span class="report3__presetChevron">›</span>
+        </a>
         <a class="report3__presetLink <?php echo $view === 'seo' ? 'is-active' : ''; ?>"
            href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=seo'; ?>"
            <?php echo $view === 'seo' ? 'aria-current="page"' : ''; ?>>
@@ -375,7 +407,144 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     </aside>
 
     <div class="report3__content">
-      <?php if ($view === 'seo'): ?>
+      <?php if ($view === 'ppc'): ?>
+        <section class="report3__section report-section" id="ppc-work">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Darbų apžvalga</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="report3__tableTitle">Atlikti mokamos reklamos darbai / komentarai</div>
+            <?php
+              $ppcSec = is_array($reportData['sections']['ppc_report'] ?? null) ? (array)$reportData['sections']['ppc_report'] : [];
+              $ppcWork = (string)($ppcSec['work_summary'] ?? '');
+              $ppcWorkTrim = trim($ppcWork);
+            ?>
+            <?php if ($role === 'ADMIN'): ?>
+              <form method="post" action="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=ppc'; ?>">
+                <?php echo csrf_input(); ?>
+                <input type="hidden" name="action" value="save_ppc_work_summary">
+                <div class="form-row">
+                  <textarea class="report3__textarea" id="ppc_work_summary" name="ppc_work_summary" rows="8" placeholder="Įveskite atliktus mokamos reklamos darbus / komentarus..."><?php echo e($ppcWork); ?></textarea>
+                </div>
+                <div class="card__actions">
+                  <button class="btn btn--primary" type="submit">Išsaugoti</button>
+                </div>
+              </form>
+            <?php else: ?>
+              <div class="report3__notesRead" id="ppc_work_summary_read"><?php echo $ppcWorkTrim !== '' ? nl2br(e($ppcWorkTrim)) : '<span class="muted">—</span>'; ?></div>
+            <?php endif; ?>
+
+            <div class="report3__notice">
+              Svarbu: pateikiami duomenys gali būti dalinai netikslūs dėl
+              Consent Mode v2 ir ribojamo dalies vartotojų duomenų pasiekimo.
+            </div>
+          </div>
+        </section>
+
+        <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
+          <a class="report3__tab" href="#ppc-visits">Apsilankymų duomenys</a>
+          <a class="report3__tab" href="#ppc-behavior">Lankytojų elgesys</a>
+          <?php if ($showSales): ?>
+            <a class="report3__tab" href="#ppc-sales">Pardavimų duomenys</a>
+          <?php endif; ?>
+          <a class="report3__tab" href="#ppc-goals">Įgyvendinti tikslai</a>
+        </div>
+
+        <section class="report3__section report-section" id="ppc-visits">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Google Ads pritrauktų lankytojų duomenys</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?> · <?php echo e($lastRange); ?></div>
+            </div>
+
+            <div class="report3__tableTitle">Apsilankymų duomenys</div>
+            <div class="report3__chartWrap">
+              <canvas id="chart-ppc-visits-line" height="160"></canvas>
+            </div>
+
+            <div class="report3__compare">
+              <div class="table-wrap">
+                <table class="table table--compact" id="table-ppc-visits"></table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="report3__section report-section" id="ppc-campaigns">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Mokamos reklamos kampanijos</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-campaigns"></table>
+            </div>
+          </div>
+        </section>
+
+        <section class="report3__section report-section" id="ppc-keywords">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Raktažodžiai (Paid Search)</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-keywords"></table>
+            </div>
+          </div>
+        </section>
+
+        <section class="report3__section report-section" id="ppc-cities">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Miestai (Paid Search)</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-cities"></table>
+            </div>
+          </div>
+        </section>
+
+        <section class="report3__section report-section" id="ppc-behavior">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Mokamos reklamos lankytojų elgesys</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-behavior"></table>
+            </div>
+          </div>
+        </section>
+
+        <?php if ($showSales): ?>
+        <section class="report3__section report-section" id="ppc-sales">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Pardavimai</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-sales"></table>
+            </div>
+          </div>
+        </section>
+        <?php endif; ?>
+
+        <section class="report3__section report-section" id="ppc-goals">
+          <div class="card">
+            <div class="report3__sectionHead">
+              <div class="report3__sectionTitle">Įgyvendinti tikslai (PPC)</div>
+              <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+            </div>
+            <div class="table-wrap">
+              <table class="table table--compact" id="table-ppc-goals"></table>
+            </div>
+          </div>
+        </section>
+      <?php elseif ($view === 'seo'): ?>
         <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
           <a class="report3__tab" href="#seo-work">Darbų apžvalga</a>
           <a class="report3__tab" href="#seo-gsc">Google Search Console duomenys</a>
