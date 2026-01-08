@@ -25,18 +25,35 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $year = safe_int($_POST['year'] ?? $defaultYear, $defaultYear);
     $month = safe_int($_POST['month'] ?? $defaultMonth, $defaultMonth);
     $work = safe_string($_POST['work_summary'] ?? '');
+    $indexedRaw = trim(safe_string($_POST['indexed_pages_manual'] ?? ''));
+    $indexed = null;
+    if ($indexedRaw !== '') {
+        $indexed = safe_int($indexedRaw, 0);
+    }
 
     if ($projectId <= 0 || $year < 2000 || $year > 2100 || $month < 1 || $month > 12) {
         flash_set('error', 'Invalid input.');
         redirect('/admin/notes.php');
     }
 
-    $stmt = $pdo->prepare('
-        INSERT INTO monthly_notes (project_id, year, month, work_summary)
-        VALUES (?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE work_summary = VALUES(work_summary)
-    ');
-    $stmt->execute([$projectId, $year, $month, $work]);
+    try {
+        $stmt = $pdo->prepare('
+            INSERT INTO monthly_notes (project_id, year, month, work_summary, indexed_pages_manual)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              work_summary = VALUES(work_summary),
+              indexed_pages_manual = VALUES(indexed_pages_manual)
+        ');
+        $stmt->execute([$projectId, $year, $month, $work, $indexed]);
+    } catch (Throwable $e) {
+        // Backward compatibility: DB schema may not have indexed_pages_manual yet.
+        $stmt = $pdo->prepare('
+            INSERT INTO monthly_notes (project_id, year, month, work_summary)
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE work_summary = VALUES(work_summary)
+        ');
+        $stmt->execute([$projectId, $year, $month, $work]);
+    }
 
     flash_set('success', 'Monthly note saved.');
     redirect('/admin/notes.php?project_id=' . $projectId . '&year=' . $year . '&month=' . $month);
@@ -51,11 +68,23 @@ if ($projectId > 0) {
 }
 
 $existing = '';
+$existingIndexed = null;
 if ($project) {
-    $stmt = $pdo->prepare('SELECT work_summary FROM monthly_notes WHERE project_id = ? AND year = ? AND month = ? LIMIT 1');
-    $stmt->execute([$projectId, $year, $month]);
-    $val = $stmt->fetchColumn();
-    $existing = is_string($val) ? $val : '';
+    try {
+        $stmt = $pdo->prepare('SELECT work_summary, indexed_pages_manual FROM monthly_notes WHERE project_id = ? AND year = ? AND month = ? LIMIT 1');
+        $stmt->execute([$projectId, $year, $month]);
+        $r = $stmt->fetch();
+        if (is_array($r)) {
+            $existing = is_string($r['work_summary'] ?? null) ? (string)$r['work_summary'] : '';
+            $existingIndexed = $r['indexed_pages_manual'] ?? null;
+        }
+    } catch (Throwable $e) {
+        $stmt = $pdo->prepare('SELECT work_summary FROM monthly_notes WHERE project_id = ? AND year = ? AND month = ? LIMIT 1');
+        $stmt->execute([$projectId, $year, $month]);
+        $val = $stmt->fetchColumn();
+        $existing = is_string($val) ? $val : '';
+        $existingIndexed = null;
+    }
 }
 
 $history = [];
@@ -114,6 +143,11 @@ render_header('Admin: Monthly Notes');
         <input type="hidden" name="project_id" value="<?php echo e((string)$projectId); ?>">
         <input type="hidden" name="year" value="<?php echo e((string)$year); ?>">
         <input type="hidden" name="month" value="<?php echo e((string)$month); ?>">
+        <div class="form-row">
+          <label for="indexed_pages_manual">Indeksuotų puslapių kiekis Google (rankiniu būdu)</label>
+          <input id="indexed_pages_manual" name="indexed_pages_manual" type="number" min="0" value="<?php echo e($existingIndexed === null ? '' : (string)$existingIndexed); ?>">
+          <div class="muted" style="font-size:13px; margin-top:4px">Rodoma SEO puslapyje kaip rankinis įrašas (GSC dar neintegruota).</div>
+        </div>
         <div class="form-row">
           <label for="work_summary">Work summary</label>
           <textarea id="work_summary" name="work_summary" rows="10"><?php echo e($existing); ?></textarea>

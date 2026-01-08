@@ -257,3 +257,214 @@ function ga4_get_visitors_overview(string $propertyId, string $startDate, string
     ];
 }
 
+function ga4_dimension_filter_exact(string $fieldName, string $value): array
+{
+    return [
+        'filter' => [
+            'fieldName' => $fieldName,
+            'stringFilter' => [
+                'matchType' => 'EXACT',
+                'value' => $value,
+                'caseSensitive' => false,
+            ],
+        ],
+    ];
+}
+
+/**
+ * Channel-group summary table for a month.
+ * Returns: ['ok'=>true, 'rows'=>[ ['channel'=>'Organic Search', 'totals'=>[...] ], ... ] ]
+ */
+function ga4_get_channel_groups_summary(string $propertyId, string $startDate, string $endDate): array
+{
+    $metrics = [
+        'totalUsers',
+        'newUsers',
+        'sessions',
+        'engagementRate',
+        'averageSessionDuration',
+        'screenPageViewsPerSession',
+    ];
+
+    $res = ga4_run_report($propertyId, $startDate, $endDate, $metrics, ['sessionDefaultChannelGroup']);
+    $usedPageViewsFallback = false;
+    if (!$res['ok']) {
+        $msg = (string)($res['error']['message'] ?? '');
+        if (str_contains($msg, 'screenPageViewsPerSession')) {
+            $usedPageViewsFallback = true;
+            $metrics = [
+                'totalUsers',
+                'newUsers',
+                'sessions',
+                'engagementRate',
+                'averageSessionDuration',
+                'screenPageViews',
+            ];
+            $res = ga4_run_report($propertyId, $startDate, $endDate, $metrics, ['sessionDefaultChannelGroup']);
+        }
+    }
+    if (!$res['ok']) {
+        return $res;
+    }
+
+    $data = (array)$res['data'];
+    $rows = (array)($data['rows'] ?? []);
+    $out = [];
+    foreach ($rows as $r) {
+        $dimVals = (array)($r['dimensionValues'] ?? []);
+        $metVals = (array)($r['metricValues'] ?? []);
+        $channel = (string)($dimVals[0]['value'] ?? '');
+        if ($channel === '') {
+            continue;
+        }
+        $vals = array_map(fn($mv) => (string)($mv['value'] ?? ''), $metVals);
+        $map = [];
+        foreach ($metrics as $i => $name) {
+            $map[$name] = $vals[$i] ?? '0';
+        }
+
+        $users = (int)round(ga4_parse_metric_value($map['totalUsers'] ?? '0'));
+        $newUsers = (int)round(ga4_parse_metric_value($map['newUsers'] ?? '0'));
+        $sessions = (int)round(ga4_parse_metric_value($map['sessions'] ?? '0'));
+        $engagementRate = ga4_parse_metric_value($map['engagementRate'] ?? '0');
+        $avgSessionDurationSec = (int)round(ga4_parse_metric_value($map['averageSessionDuration'] ?? '0'));
+
+        $pagesPerSession = 0.0;
+        if (!$usedPageViewsFallback) {
+            $pagesPerSession = ga4_parse_metric_value($map['screenPageViewsPerSession'] ?? '0');
+        } else {
+            $pageViews = ga4_parse_metric_value($map['screenPageViews'] ?? '0');
+            $pagesPerSession = $sessions > 0 ? ($pageViews / $sessions) : 0.0;
+        }
+
+        $out[] = [
+            'channel' => $channel,
+            'totals' => [
+                'users' => $users,
+                'new_users' => $newUsers,
+                'sessions' => $sessions,
+                'engagement_rate' => $engagementRate,
+                'avg_session_duration_sec' => $avgSessionDurationSec,
+                'pages_per_session' => round($pagesPerSession, 4),
+            ],
+        ];
+    }
+
+    return ['ok' => true, 'rows' => $out];
+}
+
+/**
+ * Daily series (users + sessions), optionally filtered by a channel group.
+ * Returns: ['ok'=>true, 'daily'=>[ ['date'=>'YYYY-MM-DD', 'users'=>..., 'sessions'=>...], ... ] ]
+ */
+function ga4_get_daily_users_sessions(string $propertyId, string $startDate, string $endDate, ?string $channelGroup = null): array
+{
+    $filter = null;
+    if (is_string($channelGroup) && trim($channelGroup) !== '') {
+        $filter = ga4_dimension_filter_exact('sessionDefaultChannelGroup', trim($channelGroup));
+    }
+    $dailyRes = ga4_run_report($propertyId, $startDate, $endDate, ['totalUsers', 'sessions'], ['date'], $filter);
+    if (!$dailyRes['ok']) {
+        return $dailyRes;
+    }
+    $dailyData = (array)$dailyRes['data'];
+    $rows = (array)($dailyData['rows'] ?? []);
+    $daily = [];
+    foreach ($rows as $r) {
+        $dimVals = (array)($r['dimensionValues'] ?? []);
+        $metVals = (array)($r['metricValues'] ?? []);
+        $dateRaw = (string)($dimVals[0]['value'] ?? '');
+        $usersV = (string)($metVals[0]['value'] ?? '0');
+        $sessionsV = (string)($metVals[1]['value'] ?? '0');
+        $daily[] = [
+            'date' => ga4_format_date_yyyymmdd($dateRaw),
+            'users' => (int)round(ga4_parse_metric_value($usersV)),
+            'sessions' => (int)round(ga4_parse_metric_value($sessionsV)),
+        ];
+    }
+    return ['ok' => true, 'daily' => $daily];
+}
+
+/**
+ * Conversions by event name.
+ * Returns: ['ok'=>true, 'events'=>[ ['eventName'=>..., 'conversions'=>...], ... ] ]
+ */
+function ga4_get_conversions_by_event(string $propertyId, string $startDate, string $endDate, ?string $channelGroup = null): array
+{
+    $filter = null;
+    if (is_string($channelGroup) && trim($channelGroup) !== '') {
+        $filter = ga4_dimension_filter_exact('sessionDefaultChannelGroup', trim($channelGroup));
+    }
+    $res = ga4_run_report($propertyId, $startDate, $endDate, ['conversions'], ['eventName'], $filter);
+    if (!$res['ok']) {
+        return $res;
+    }
+    $data = (array)$res['data'];
+    $rows = (array)($data['rows'] ?? []);
+    $events = [];
+    foreach ($rows as $r) {
+        $dimVals = (array)($r['dimensionValues'] ?? []);
+        $metVals = (array)($r['metricValues'] ?? []);
+        $name = (string)($dimVals[0]['value'] ?? '');
+        if ($name === '') {
+            continue;
+        }
+        $cnt = (int)round(ga4_parse_metric_value((string)($metVals[0]['value'] ?? '0')));
+        if ($cnt <= 0) {
+            continue;
+        }
+        $events[] = ['eventName' => $name, 'conversions' => $cnt];
+    }
+    usort($events, fn($a, $b) => ((int)($b['conversions'] ?? 0)) <=> ((int)($a['conversions'] ?? 0)));
+    return ['ok' => true, 'events' => $events];
+}
+
+/**
+ * Ecommerce totals (best-effort; returns ok=false if metrics unavailable).
+ * Returns: ['ok'=>true, 'totals'=>[...]]
+ */
+function ga4_get_ecommerce_totals(string $propertyId, string $startDate, string $endDate, ?string $channelGroup = null): array
+{
+    $filter = null;
+    if (is_string($channelGroup) && trim($channelGroup) !== '') {
+        $filter = ga4_dimension_filter_exact('sessionDefaultChannelGroup', trim($channelGroup));
+    }
+
+    $metrics = ['purchases', 'purchaseRevenue', 'ecommercePurchaseConversionRate', 'transactions'];
+    $res = ga4_run_report($propertyId, $startDate, $endDate, $metrics, [], $filter);
+    if (!$res['ok']) {
+        // Retry with a minimal safe set.
+        $metrics = ['purchases', 'purchaseRevenue'];
+        $res = ga4_run_report($propertyId, $startDate, $endDate, $metrics, [], $filter);
+        if (!$res['ok']) {
+            return $res;
+        }
+    }
+
+    $data = (array)$res['data'];
+    $row = (array)($data['rows'][0]['metricValues'] ?? []);
+    $values = array_map(fn($mv) => (string)($mv['value'] ?? ''), $row);
+    $map = [];
+    foreach ($metrics as $i => $name) {
+        $map[$name] = $values[$i] ?? '0';
+    }
+
+    $purchases = (int)round(ga4_parse_metric_value($map['purchases'] ?? '0'));
+    $revenue = ga4_parse_metric_value($map['purchaseRevenue'] ?? '0');
+    $conversionRate = isset($map['ecommercePurchaseConversionRate']) ? ga4_parse_metric_value($map['ecommercePurchaseConversionRate']) : null;
+    $transactions = isset($map['transactions']) ? (int)round(ga4_parse_metric_value($map['transactions'])) : null;
+    if ($transactions === null) {
+        $transactions = $purchases;
+    }
+
+    return [
+        'ok' => true,
+        'totals' => [
+            'purchases' => $purchases,
+            'transactions' => $transactions,
+            'revenue' => round($revenue, 2),
+            'conversion_rate' => $conversionRate,
+        ],
+    ];
+}
+

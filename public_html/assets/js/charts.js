@@ -6,16 +6,6 @@
   if (!snap || !snap.analytics) return;
   if (typeof Chart === 'undefined') return;
 
-  function sectionIsReal(key) {
-    var meta = snap.meta || {};
-    var sections = meta.sections || {};
-    var m = sections[key];
-    if (!m) return true; // old snapshots (no meta) - don't break
-    var src = String(m.source || 'MOCK').toUpperCase();
-    var ok = !!m.ok;
-    return src !== 'MOCK' && ok;
-  }
-
   function ctx(id) {
     var el = document.getElementById(id);
     return el ? el.getContext('2d') : null;
@@ -32,79 +22,92 @@
 
   var COLORS = ['#4f8cff', '#6ee7ff', '#34d399', '#fbbf24', '#ff5a7a', '#a78bfa'];
 
-  // Visitors: users vs sessions
-  (function () {
-    var c = ctx('chartVisitors');
-    if (!c) return;
-    if (!sectionIsReal('visitors_overview')) return;
-    var v = snap.analytics.visitors_overview || {};
-    var totals = v.totals || v;
-    var daily = Array.isArray(v.daily) ? v.daily : [];
+  function getCurrentPageKey() {
+    try {
+      var sp = new URLSearchParams(window.location.search || '');
+      var p = (sp.get('page') || '').toLowerCase();
+      if (p) return p;
+    } catch (_) {}
+    var meta = snap.meta || {};
+    var pagesMeta = meta.pages || {};
+    return (pagesMeta.defaultPage || 'all');
+  }
 
-    if (daily.length) {
-      new Chart(c, {
-        type: 'line',
-        data: {
-          labels: daily.map(function (x) { return x.date; }),
-          datasets: [{
-            label: 'Users',
-            data: daily.map(function (x) { return x.users || 0; }),
-            borderColor: COLORS[0],
-            backgroundColor: rgba(COLORS[0], 0.15),
-            tension: 0.25,
-            fill: true
-          }, {
-            label: 'Sessions',
-            data: daily.map(function (x) { return x.sessions || 0; }),
-            borderColor: COLORS[1],
-            backgroundColor: rgba(COLORS[1], 0.12),
-            tension: 0.25,
-            fill: true
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { labels: { color: 'rgba(232,238,252,0.9)' } } },
-          scales: {
-            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(232,238,252,0.85)' } },
-            x: { grid: { display: false }, ticks: { color: 'rgba(232,238,252,0.65)' } }
-          }
-        }
-      });
-      return;
-    }
+  function getPage() {
+    var pages = (snap.analytics && snap.analytics.pages) ? snap.analytics.pages : null;
+    if (!pages) return null;
+    var key = getCurrentPageKey();
+    return pages[key] || pages.all || null;
+  }
+
+  function normalizeDaily(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(function (x) {
+      return {
+        date: x && x.date ? String(x.date) : '',
+        users: x && typeof x.users !== 'undefined' ? Number(x.users) : 0,
+        sessions: x && typeof x.sessions !== 'undefined' ? Number(x.sessions) : 0
+      };
+    }).filter(function (x) { return !!x.date; });
+  }
+
+  // Daily users comparison (this month vs last year).
+  (function () {
+    var c = ctx('chartPageDailyUsers');
+    if (!c) return;
+    var page = getPage();
+    if (!page) return;
+    var daily = page.daily || {};
+    var dThis = normalizeDaily(daily.thisMonth);
+    var dLast = normalizeDaily(daily.lastYear);
+    if (!dThis.length || !dLast.length) return;
+
+    // Map last year by day index (same month length assumption).
+    var labels = dThis.map(function (x) { return x.date; });
+    var thisUsers = dThis.map(function (x) { return x.users || 0; });
+    var lastUsers = labels.map(function (_, i) { return (dLast[i] && dLast[i].users) ? dLast[i].users : 0; });
 
     new Chart(c, {
-      type: 'bar',
+      type: 'line',
       data: {
-        labels: ['Users', 'Sessions', 'New users'],
+        labels: labels,
         datasets: [{
-          label: 'Count',
-          data: [totals.users || 0, totals.sessions || 0, totals.new_users || 0],
-          backgroundColor: [rgba(COLORS[0], 0.5), rgba(COLORS[1], 0.5), rgba(COLORS[2], 0.5)],
-          borderColor: [COLORS[0], COLORS[1], COLORS[2]],
-          borderWidth: 1
+          label: 'Šis mėnuo (vartotojai)',
+          data: thisUsers,
+          borderColor: COLORS[0],
+          backgroundColor: rgba(COLORS[0], 0.15),
+          tension: 0.25,
+          fill: true
+        }, {
+          label: 'Praeitų metų tas pats mėnuo (vartotojai)',
+          data: lastUsers,
+          borderColor: COLORS[1],
+          backgroundColor: rgba(COLORS[1], 0.10),
+          tension: 0.25,
+          fill: true
         }]
       },
       options: {
         responsive: true,
-        plugins: { legend: { display: false } },
+        plugins: { legend: { labels: { color: 'rgba(232,238,252,0.9)' } } },
         scales: {
           y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(232,238,252,0.85)' } },
-          x: { grid: { display: false }, ticks: { color: 'rgba(232,238,252,0.85)' } }
+          x: { grid: { display: false }, ticks: { color: 'rgba(232,238,252,0.65)' } }
         }
       }
     });
   })();
 
-  // Channels: users per channel
+  // Channels bar (users per channel) — typically on "all" page.
   (function () {
-    var c = ctx('chartChannels');
+    var c = ctx('chartChannelsUsers');
     if (!c) return;
-    if (!sectionIsReal('traffic_channels')) return;
-    var ch = snap.analytics.traffic_channels || [];
-    var labels = ch.map(function (x) { return x.channel; });
-    var data = ch.map(function (x) { return x.users; });
+    var page = getPage();
+    if (!page) return;
+    var rows = Array.isArray(page.tableRows) ? page.tableRows : [];
+    if (!rows.length) return;
+    var labels = rows.map(function (r) { return String((r && (r.labelLT || r.channel)) || ''); });
+    var data = rows.map(function (r) { return Number((r && r.users) || 0); });
     var bg = labels.map(function (_, i) { return rgba(COLORS[i % COLORS.length], 0.55); });
     var br = labels.map(function (_, i) { return COLORS[i % COLORS.length]; });
 
@@ -113,66 +116,10 @@
       data: {
         labels: labels,
         datasets: [{
-          label: 'Users',
+          label: 'Vartotojai',
           data: data,
           backgroundColor: bg,
           borderColor: br,
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(232,238,252,0.85)' } },
-          x: { grid: { display: false }, ticks: { color: 'rgba(232,238,252,0.85)' } }
-        }
-      }
-    });
-  })();
-
-  // Sales: revenue/transactions
-  (function () {
-    var c = ctx('chartSales');
-    if (!c) return;
-    if (!sectionIsReal('sales')) return;
-    var s = snap.analytics.sales;
-    if (!s) return;
-    new Chart(c, {
-      type: 'doughnut',
-      data: {
-        labels: ['Revenue ($)', 'Transactions'],
-        datasets: [{
-          data: [s.revenue || 0, s.transactions || 0],
-          backgroundColor: [rgba(COLORS[0], 0.55), rgba(COLORS[4], 0.55)],
-          borderColor: [COLORS[0], COLORS[4]],
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { labels: { color: 'rgba(232,238,252,0.9)' } }
-        }
-      }
-    });
-  })();
-
-  // SEO: clicks vs impressions
-  (function () {
-    var c = ctx('chartSeo');
-    if (!c) return;
-    if (!sectionIsReal('seo_summary')) return;
-    var seo = snap.analytics.seo_summary || {};
-    new Chart(c, {
-      type: 'bar',
-      data: {
-        labels: ['Clicks', 'Impressions'],
-        datasets: [{
-          label: 'SEO',
-          data: [seo.clicks || 0, seo.impressions || 0],
-          backgroundColor: [rgba(COLORS[2], 0.55), rgba(COLORS[1], 0.55)],
-          borderColor: [COLORS[2], COLORS[1]],
           borderWidth: 1
         }]
       },
