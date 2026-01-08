@@ -3,10 +3,39 @@
   'use strict';
 
   var data = window.REPORT_DATA || {};
+  var meta = data.meta || {};
   var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
   var project = data.project || {};
   var showSales = !!project.show_sales_section;
-  var allReport = (data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null;
+  var activeSegmentKey = (meta && meta.active_segment_key) ? String(meta.active_segment_key) : '';
+  var isSegmentView = !!activeSegmentKey;
+  var segmentReports = (data.sections && data.sections.segment_reports) ? data.sections.segment_reports : null;
+  var segmentReport = null;
+  if (isSegmentView && segmentReports && segmentReports[activeSegmentKey]) {
+    segmentReport = segmentReports[activeSegmentKey];
+  }
+
+  // "All visitors" UI is reused for segment reports; we just swap the payload.
+  // If a report snapshot doesn't contain segment data yet, fall back to placeholders (not to "all visitors" data).
+  var allReport = segmentReport || ((data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null);
+  if (isSegmentView && !segmentReport) {
+    allReport = {
+      segment_key: activeSegmentKey,
+      sources: [],
+      timeseries: { labels: [], this: [], last: [] },
+      visits: { totals: {}, by_source: {} },
+      behavior: { totals: {}, by_source: {} },
+      sales: { enabled: showSales, totals: {}, by_source: {} },
+      goals: {
+        excluded_events: ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
+        goal_names: [],
+        totals_this: { sessions: 0, goals: {} },
+        totals_last: { sessions: 0, goals: {} },
+        by_source: {}
+      },
+      demographics: { gender: [], browsers: [], devices: [], age: [], cities: [] }
+    };
+  }
   var seoReport = (data.sections && data.sections.seo_report) ? data.sections.seo_report : null;
   var ppcReport = (data.sections && data.sections.ppc_report) ? data.sections.ppc_report : null;
   var charts = Object.create(null);
@@ -361,12 +390,16 @@
     destroyChart('visits_line');
     if (!window.Chart) return;
 
-    // Prefer timeseries from traffic/all/visits since it's day-of-month aligned.
+    // Prefer report-local timeseries for segment views; otherwise use traffic/all/visits.
     var ts = null;
     try {
-      ts = data.sections && data.sections.traffic && data.sections.traffic.all && data.sections.traffic.all.visits
-        ? data.sections.traffic.all.visits.timeseries
-        : null;
+      if (isSegmentView && allReport && allReport.timeseries) {
+        ts = allReport.timeseries;
+      } else {
+        ts = data.sections && data.sections.traffic && data.sections.traffic.all && data.sections.traffic.all.visits
+          ? data.sections.traffic.all.visits.timeseries
+          : null;
+      }
     } catch (e) {}
 
     if (!ts || !Array.isArray(ts.labels)) return;
@@ -805,7 +838,8 @@
     if (!allReport) return;
     var d = allReport.demographics || {};
     renderDoughnut('gender', d.gender);
-    renderDoughnut('browsers', d.browsers);
+    // Segment reports use the same "browsers" slot to display cities (optional).
+    renderDoughnut('browsers', isSegmentView ? (d.cities || []) : d.browsers);
     renderDoughnut('devices', d.devices);
     renderDoughnut('age', d.age);
   }
