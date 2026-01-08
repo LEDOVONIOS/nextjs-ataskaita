@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/bootstrap_errors.php';
+
 // =========================
 // App configuration
 // =========================
@@ -13,9 +16,9 @@ const BASE_PATH = '';
 
 // Database configuration (MySQL)
 const DB_HOST = 'localhost';
-const DB_NAME = 'reporting_system';
-const DB_USER = 'db_user';
-const DB_PASS = 'db_password';
+const DB_NAME = 'u683371179_atassss';
+const DB_USER = 'u683371179_atassss';
+const DB_PASS = '6y8NNx$A';
 const DB_CHARSET = 'utf8mb4';
 
 // Security/session
@@ -34,7 +37,7 @@ const GA4_ENABLED = false;
 // - Recommended: absolute path
 // - If relative: it's resolved relative to /includes
 // Default: /public_html/includes/keys/service-account.json
-const GOOGLE_SA_KEY_PATH = __DIR__ . '/keys/service-account.json';
+const GOOGLE_SA_KEY_PATH = __DIR__ . '/keys/ataskaitu-sistema-6a64265403e6.json';
 
 // Cached OAuth token file (must be writable by PHP).
 const GA4_TOKEN_CACHE_FILE = __DIR__ . '/cache/ga4_token.json';
@@ -50,14 +53,10 @@ const GA4_TOKEN_CACHE_TTL_SECONDS = 3300;
 
 date_default_timezone_set('UTC');
 
-if (APP_DEBUG) {
-    ini_set('display_errors', '1');
-    error_reporting(E_ALL);
-} else {
-    ini_set('display_errors', '0');
-    ini_set('log_errors', '1');
-    error_reporting(E_ALL);
-}
+// Safety: don't expose errors/stack traces to users; use file logging instead.
+ini_set('display_errors', '0');
+ini_set('log_errors', '0');
+error_reporting(E_ALL);
 
 // Start session early (needed for auth, CSRF, flash).
 if (session_status() !== PHP_SESSION_ACTIVE) {

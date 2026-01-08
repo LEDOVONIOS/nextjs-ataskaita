@@ -117,22 +117,36 @@ function ga4_run_report(
 
     $http = (int)$resp['http'];
     $body = (string)$resp['body'];
+    if ($http < 200 || $http >= 300) {
+        // Diagnostics: log non-2xx with safe request metadata only (never tokens/keys).
+        log_error('GA4 API returned non-2xx', [
+            'http' => $http,
+            'endpoint' => $url,
+            // Only log payload metrics/dimensions (no dates, filters, tokens, or credentials).
+            'metrics' => array_values(array_map('strval', $metrics)),
+            'dimensions' => array_values(array_map('strval', $dimensions)),
+            'response_snippet' => substr($body, 0, 500),
+        ]);
+
+        $json = json_decode($body, true);
+        $msg = is_array($json) ? ($json['error']['message'] ?? 'GA4 API returned an error.') : ('GA4 API returned HTTP ' . $http . '.');
+        return [
+            'ok' => false,
+            'error' => [
+                'message' => (string)$msg,
+                'details' => [
+                    'http' => $http,
+                    'status' => (is_array($json) ? ($json['error']['status'] ?? null) : null),
+                ],
+            ],
+        ];
+    }
+
     $json = json_decode($body, true);
     if (!is_array($json)) {
         return [
             'ok' => false,
             'error' => ['message' => 'GA4 API response was not valid JSON.', 'details' => ['http' => $http]],
-        ];
-    }
-
-    if ($http < 200 || $http >= 300) {
-        $msg = $json['error']['message'] ?? 'GA4 API returned an error.';
-        return [
-            'ok' => false,
-            'error' => [
-                'message' => (string)$msg,
-                'details' => ['http' => $http, 'status' => $json['error']['status'] ?? null],
-            ],
         ];
     }
 
