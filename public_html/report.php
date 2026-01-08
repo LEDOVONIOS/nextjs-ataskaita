@@ -158,10 +158,12 @@ function normalize_report_contract(array $snapshot, array $row): array
     ];
 
     // If already in the contract shape, trust it (but ensure required keys exist).
-    if (isset($snapshot['sections']['traffic']) && is_array($snapshot['sections']['traffic'])) {
+    if (isset($snapshot['sections']) && is_array($snapshot['sections']) && isset($snapshot['sections']['traffic']) && is_array($snapshot['sections']['traffic'])) {
         $base['meta'] = is_array($snapshot['meta'] ?? null) ? (array)$snapshot['meta'] + $base['meta'] : $base['meta'];
         $base['period'] = is_array($snapshot['period'] ?? null) ? (array)$snapshot['period'] + $base['period'] : $base['period'];
         $base['project'] = is_array($snapshot['project'] ?? null) ? (array)$snapshot['project'] + $base['project'] : $base['project'];
+        // Preserve any additional section payloads (e.g. Phase 3 "all visitors report" extras).
+        $base['sections'] = (array)$snapshot['sections'] + $base['sections'];
         $base['sections']['traffic'] = (array)$snapshot['sections']['traffic'];
         return $base;
     }
