@@ -725,9 +725,11 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         array $ga4TotalsLast,
         array $tsVisits,
         array $tsBehavior,
-        array $tsSales
+        array $tsSales,
+        ?array $visitsBySourceOverride = null,
+        ?array $sourcesOverride = null
     ): array {
-        $sources = phase36_sources_for_traffic_key($trafficKey);
+        $sources = is_array($sourcesOverride) ? $sourcesOverride : phase36_sources_for_traffic_key($trafficKey);
 
         $usersThis = (int)ga4_parse_int($ga4TotalsThis['totalUsers'] ?? 0, 0);
         $usersLast = (int)ga4_parse_int($ga4TotalsLast['totalUsers'] ?? 0, 0);
@@ -736,22 +738,40 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         $sessThis = (int)ga4_parse_int($ga4TotalsThis['sessions'] ?? 0, 0);
         $sessLast = (int)ga4_parse_int($ga4TotalsLast['sessions'] ?? 0, 0);
 
-        $visitsSplit = phase36_build_visits_by_source(
-            $projectId,
-            $year,
-            $month,
-            'traffic|' . $trafficKey,
-            $sources,
-            $usersThis,
-            $usersLast,
-            $newThis,
-            $newLast,
-            $sessThis,
-            $sessLast
-        );
-        $visitsBySource = (array)($visitsSplit['rows'] ?? []);
-        $sessionsThisByKey = is_array($visitsSplit['sessions_this'] ?? null) ? (array)$visitsSplit['sessions_this'] : [];
-        $sessionsLastByKey = is_array($visitsSplit['sessions_last'] ?? null) ? (array)$visitsSplit['sessions_last'] : [];
+        $visitsBySource = [];
+        $sessionsThisByKey = [];
+        $sessionsLastByKey = [];
+        if (is_array($visitsBySourceOverride)) {
+            $visitsBySource = $visitsBySourceOverride;
+            foreach ($visitsBySource as $r) {
+                if (!is_array($r)) {
+                    continue;
+                }
+                $k = (string)($r['key'] ?? '');
+                if ($k === '') {
+                    continue;
+                }
+                $sessionsThisByKey[$k] = (int)($r['this']['sessions'] ?? 0);
+                $sessionsLastByKey[$k] = (int)($r['last']['sessions'] ?? 0);
+            }
+        } else {
+            $visitsSplit = phase36_build_visits_by_source(
+                $projectId,
+                $year,
+                $month,
+                'traffic|' . $trafficKey,
+                $sources,
+                $usersThis,
+                $usersLast,
+                $newThis,
+                $newLast,
+                $sessThis,
+                $sessLast
+            );
+            $visitsBySource = (array)($visitsSplit['rows'] ?? []);
+            $sessionsThisByKey = is_array($visitsSplit['sessions_this'] ?? null) ? (array)$visitsSplit['sessions_this'] : [];
+            $sessionsLastByKey = is_array($visitsSplit['sessions_last'] ?? null) ? (array)$visitsSplit['sessions_last'] : [];
+        }
 
         $engThis = (float)ga4_parse_float($ga4TotalsThis['engagementRate'] ?? 0.0, 0.0);
         $engLast = (float)ga4_parse_float($ga4TotalsLast['engagementRate'] ?? 0.0, 0.0);
@@ -850,6 +870,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
 
     $ga4ClientRes = null;
     $ga4Req = null;
+    $ga4ClientForBreakdowns = null;
     if ($ga4PropertyId !== '' && ga4_is_valid_property_id($ga4PropertyId)) {
         $ga4Req = ga4_requirements_check([
             'component' => 'report_generator',
@@ -897,6 +918,24 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 'error' => (string)($smoke['error'] ?? 'unknown'),
             ]);
         } else {
+            $ga4ClientForBreakdowns = $ga4Client;
+
+            $zeroTotals = static function (bool $includeSales): array {
+                $base = [
+                    'totalUsers' => '0',
+                    'newUsers' => '0',
+                    'sessions' => '0',
+                    'engagementRate' => '0',
+                    'averageSessionDuration' => '0',
+                    'screenPageViewsPerSession' => '0',
+                ];
+                if ($includeSales) {
+                    $base['purchases'] = '0';
+                    $base['totalRevenue'] = '0';
+                }
+                return $base;
+            };
+
             // Preferred path: 1 totals query (all) + 1 totals query (by channel group) + daily series (all + by channel group).
             $allTotals = ga4_fetch_totals_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
             $groupTotals = ga4_fetch_totals_by_channel_group($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
@@ -925,10 +964,12 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 }
 
                 $channelDim = (string)($groupTotals['dimension'] ?? '');
+                $channelTsOk = false;
                 if ($channelDim !== '') {
                     $tsByThis = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $thisStart, $thisEnd, $includeSales);
                     $tsByLast = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $lastStart, $lastEnd, $includeSales);
                     if (($tsByThis['ok'] ?? false) && ($tsByLast['ok'] ?? false)) {
+                        $channelTsOk = true;
                         foreach ((array)($tsByThis['rows'] ?? []) as $r) {
                             if (!is_array($r)) {
                                 continue;
@@ -950,8 +991,46 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                             $ga4TsRowsLastByKey[$k][] = $r;
                         }
                     } else {
-                        $reportStatus = 'PARTIAL';
-                        $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 channel-group timeseries failed'];
+                        // We'll fall back to per-segment timeseries below.
+                        log_warn('GA4 channel-group timeseries failed; falling back to per-segment timeseries', [
+                            'project_id' => $projectId,
+                            'ga4_property_id' => $ga4PropertyId,
+                            'dimension' => $channelDim,
+                        ]);
+                    }
+                }
+
+                // Fallback: if we couldn't build per-channel timeseries, fetch per-segment timeseries directly.
+                if (!$channelTsOk) {
+                    foreach ($trafficKeys as $tk) {
+                        if ($tk === 'all') {
+                            continue;
+                        }
+                        $tsThis = ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales, $tk);
+                        $tsLast = ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales, $tk);
+                        if (($tsThis['ok'] ?? false) && ($tsLast['ok'] ?? false)) {
+                            $ga4TsRowsThisByKey[$tk] = (array)($tsThis['rows'] ?? []);
+                            $ga4TsRowsLastByKey[$tk] = (array)($tsLast['rows'] ?? []);
+                        } else {
+                            $reportStatus = 'PARTIAL';
+                            $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 timeseries failed for ' . $tk];
+                        }
+                    }
+                }
+
+                // Ensure missing segments are represented as zeros (normal when a channel has no traffic).
+                foreach ($trafficKeys as $tk) {
+                    if (!isset($ga4TotalsThisByKey[$tk]) || !is_array($ga4TotalsThisByKey[$tk]) || $ga4TotalsThisByKey[$tk] === []) {
+                        $ga4TotalsThisByKey[$tk] = $zeroTotals($includeSales);
+                    }
+                    if (!isset($ga4TotalsLastByKey[$tk]) || !is_array($ga4TotalsLastByKey[$tk]) || $ga4TotalsLastByKey[$tk] === []) {
+                        $ga4TotalsLastByKey[$tk] = $zeroTotals($includeSales);
+                    }
+                    if (!isset($ga4TsRowsThisByKey[$tk]) || !is_array($ga4TsRowsThisByKey[$tk])) {
+                        $ga4TsRowsThisByKey[$tk] = [];
+                    }
+                    if (!isset($ga4TsRowsLastByKey[$tk]) || !is_array($ga4TsRowsLastByKey[$tk])) {
+                        $ga4TsRowsLastByKey[$tk] = [];
                     }
                 }
             } else {
@@ -989,6 +1068,13 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 client/property not available'];
     }
 
+    $sanitizeKey = static function (string $label): string {
+        $s = strtolower(trim($label));
+        $s = preg_replace('/[^a-z0-9]+/i', '_', $s);
+        $s = is_string($s) ? trim($s, '_') : '';
+        return $s !== '' ? $s : 'other';
+    };
+
     foreach ($trafficKeys as $k) {
         $hasTotals = isset($ga4TotalsThisByKey[$k], $ga4TotalsLastByKey[$k]) && is_array($ga4TotalsThisByKey[$k]) && $ga4TotalsThisByKey[$k] !== [];
         $hasTs = isset($ga4TsRowsThisByKey[$k], $ga4TsRowsLastByKey[$k]) && is_array($ga4TsRowsThisByKey[$k]) && is_array($ga4TsRowsLastByKey[$k]);
@@ -1013,7 +1099,176 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             $tsBehavior = ['labels' => $labels, 'this' => $engThisSeries, 'last' => $engLastSeries];
             $tsSales = ['labels' => $labels, 'this' => $revThisSeries, 'last' => $revLastSeries];
 
-            $traffic[$k] = $buildTrafficSegmentFromGa4($projectId, $year, $month, $k, $includeSales, $tThis, $tLast, $tsVisits, $tsBehavior, $tsSales);
+            $visitsBySourceOverride = null;
+            $sourcesOverride = null;
+
+            if (($k === 'ppc' || $k === 'referral') && ($ga4ClientForBreakdowns instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient) && $ga4PropertyId !== '' && ga4_is_valid_property_id($ga4PropertyId)) {
+                $filter = ga4_segment_dimension_filter($k, true, 'sessionDefaultChannelGroup');
+                $metrics = ['totalUsers', 'newUsers', 'sessions'];
+                $limit = 15;
+                $dimCandidates = ($k === 'ppc')
+                    ? ['sessionCampaignName', 'sessionSourceMedium']
+                    : ['sessionSource', 'sessionSourceMedium'];
+
+                $thisRows = null;
+                $lastRows = null;
+                $usedDim = null;
+                $breakdownOk = false;
+                $lastError = null;
+
+                foreach ($dimCandidates as $dim) {
+                    $resThis = ga4_fetch_breakdown(
+                        $ga4ClientForBreakdowns,
+                        $ga4PropertyId,
+                        ['start_date' => $thisStart, 'end_date' => $thisEnd],
+                        $filter,
+                        $dim,
+                        $metrics,
+                        $limit
+                    );
+                    $resLast = ga4_fetch_breakdown(
+                        $ga4ClientForBreakdowns,
+                        $ga4PropertyId,
+                        ['start_date' => $lastStart, 'end_date' => $lastEnd],
+                        $filter,
+                        $dim,
+                        $metrics,
+                        $limit
+                    );
+
+                    if (($resThis['ok'] ?? false) && ($resLast['ok'] ?? false)) {
+                        $thisRows = (array)($resThis['rows'] ?? []);
+                        $lastRows = (array)($resLast['rows'] ?? []);
+                        $usedDim = $dim;
+                        $breakdownOk = true;
+                        break;
+                    }
+                    $lastError = (string)($resThis['error'] ?? $resLast['error'] ?? 'unknown');
+                }
+
+                if ($breakdownOk) {
+                    $map = static function (array $rows): array {
+                        $out = [];
+                        foreach ($rows as $r) {
+                            if (!is_array($r)) {
+                                continue;
+                            }
+                            $label = trim((string)($r['dimension'] ?? ''));
+                            if ($label === '') {
+                                $label = '(not set)';
+                            }
+                            $m = is_array($r['metrics'] ?? null) ? (array)$r['metrics'] : [];
+                            $out[$label] = [
+                                'users' => (int)ga4_parse_int($m['totalUsers'] ?? 0, 0),
+                                'new_users' => (int)ga4_parse_int($m['newUsers'] ?? 0, 0),
+                                'sessions' => (int)ga4_parse_int($m['sessions'] ?? 0, 0),
+                            ];
+                        }
+                        return $out;
+                    };
+
+                    $thisMap = $map(is_array($thisRows) ? $thisRows : []);
+                    $lastMap = $map(is_array($lastRows) ? $lastRows : []);
+                    $labelsUnion = array_values(array_unique(array_merge(array_keys($thisMap), array_keys($lastMap))));
+
+                    $rows = [];
+                    $seen = [];
+                    foreach ($labelsUnion as $lbl) {
+                        $lbl = (string)$lbl;
+                        $thisM = $thisMap[$lbl] ?? ['users' => 0, 'new_users' => 0, 'sessions' => 0];
+                        $lastM = $lastMap[$lbl] ?? ['users' => 0, 'new_users' => 0, 'sessions' => 0];
+                        $keyBase = $sanitizeKey($lbl);
+                        $key = $keyBase;
+                        $i = 2;
+                        while (isset($seen[$key])) {
+                            $key = $keyBase . '_' . $i;
+                            $i++;
+                        }
+                        $seen[$key] = true;
+                        $rows[] = [
+                            'key' => $key,
+                            'label' => $lbl,
+                            'this' => $thisM,
+                            'last' => $lastM,
+                        ];
+                    }
+
+                    usort($rows, static function ($a, $b) {
+                        $au = (int)($a['this']['users'] ?? 0);
+                        $bu = (int)($b['this']['users'] ?? 0);
+                        if ($au !== $bu) {
+                            return $bu <=> $au;
+                        }
+                        $al = (int)($a['last']['users'] ?? 0);
+                        $bl = (int)($b['last']['users'] ?? 0);
+                        return $bl <=> $al;
+                    });
+
+                    // IMPORTANT: if GA4 returns 0 rows, do NOT emit placeholders.
+                    $visitsBySourceOverride = $rows;
+                    $sourcesOverride = array_map(static fn($r) => ['key' => (string)($r['key'] ?? ''), 'label' => (string)($r['label'] ?? '')], $rows);
+
+                    log_info('GA4 segment breakdown', [
+                        'key' => $k,
+                        'dimension' => $usedDim,
+                        'filter' => 'sessionDefaultChannelGroup == "' . ($k === 'ppc' ? 'Paid Search' : 'Referral') . '"',
+                        'rows_this' => is_array($thisRows) ? count($thisRows) : 0,
+                        'rows_last' => is_array($lastRows) ? count($lastRows) : 0,
+                    ]);
+                } else {
+                    $reportStatus = 'PARTIAL';
+                    $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 breakdown failed for ' . $k];
+                    log_error('GA4 breakdown failed', [
+                        'key' => $k,
+                        'filter' => 'sessionDefaultChannelGroup == "' . ($k === 'ppc' ? 'Paid Search' : 'Referral') . '"',
+                        'error' => $lastError,
+                    ]);
+                    // Still remove placeholders: empty list is a valid "no data" state for by_source.
+                    $visitsBySourceOverride = [];
+                    $sourcesOverride = [];
+                }
+            }
+
+            $traffic[$k] = $buildTrafficSegmentFromGa4(
+                $projectId,
+                $year,
+                $month,
+                $k,
+                $includeSales,
+                $tThis,
+                $tLast,
+                $tsVisits,
+                $tsBehavior,
+                $tsSales,
+                $visitsBySourceOverride,
+                $sourcesOverride
+            );
+
+            $usersThisTotal = (int)ga4_parse_int($tThis['totalUsers'] ?? 0, 0);
+            $usersLastTotal = (int)ga4_parse_int($tLast['totalUsers'] ?? 0, 0);
+            $newThisTotal = (int)ga4_parse_int($tThis['newUsers'] ?? 0, 0);
+            $newLastTotal = (int)ga4_parse_int($tLast['newUsers'] ?? 0, 0);
+            $sessThisTotal = (int)ga4_parse_int($tThis['sessions'] ?? 0, 0);
+            $sessLastTotal = (int)ga4_parse_int($tLast['sessions'] ?? 0, 0);
+            $byCount = is_array($traffic[$k]['visits']['by_source'] ?? null) ? count((array)$traffic[$k]['visits']['by_source']) : 0;
+            log_info('GA4 segment built', [
+                'key' => $k,
+                'filter' => $k === 'ppc'
+                    ? 'sessionDefaultChannelGroup == "Paid Search"'
+                    : ($k === 'referral' ? 'sessionDefaultChannelGroup == "Referral"' : ($k === 'seo' ? 'sessionDefaultChannelGroup == "Organic Search"' : null)),
+                'users_this' => $usersThisTotal,
+                'users_last' => $usersLastTotal,
+                'new_users_this' => $newThisTotal,
+                'new_users_last' => $newLastTotal,
+                'sessions_this' => $sessThisTotal,
+                'sessions_last' => $sessLastTotal,
+                'by_source_count' => $byCount,
+                'timeseries_points' => count($labels),
+            ]);
+
+            if ($k !== 'all' && isset($ga4TotalsThisByKey['all']) && is_array($ga4TotalsThisByKey['all']) && $tThis === (array)$ga4TotalsThisByKey['all']) {
+                log_warn('segment fallback to all', ['key' => $k]);
+            }
         } else {
             $reportStatus = 'PARTIAL';
             $traffic[$k] = $buildTrafficSegmentEmpty($k, $labels, $includeSales);

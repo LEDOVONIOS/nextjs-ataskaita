@@ -14,6 +14,8 @@ use Google\Analytics\Data\V1beta\Filter\StringFilter\MatchType;
 use Google\Analytics\Data\V1beta\FilterExpression;
 use Google\Analytics\Data\V1beta\FilterExpressionList;
 use Google\Analytics\Data\V1beta\Metric;
+use Google\Analytics\Data\V1beta\OrderBy;
+use Google\Analytics\Data\V1beta\OrderBy\MetricOrderBy;
 use Google\Analytics\Data\V1beta\Row;
 use Google\Analytics\Data\V1beta\RunReportRequest;
 
@@ -1142,5 +1144,267 @@ function ga4_fetch_timeseries_for_segment(
     }
 
     return ['ok' => true, 'used_filter_fallback' => $usedFilterFallback, 'rows' => $out];
+}
+
+function ga4_date_range_from_mixed(mixed $dateRange): ?DateRange
+{
+    if ($dateRange instanceof DateRange) {
+        return $dateRange;
+    }
+    if (is_array($dateRange)) {
+        $start = $dateRange['start_date'] ?? $dateRange['startDate'] ?? $dateRange['start'] ?? null;
+        $end = $dateRange['end_date'] ?? $dateRange['endDate'] ?? $dateRange['end'] ?? null;
+        if ($start === null || $end === null) {
+            return null;
+        }
+        return new DateRange(['start_date' => (string)$start, 'end_date' => (string)$end]);
+    }
+    return null;
+}
+
+/**
+ * Generic totals fetch for a single dateRange.
+ *
+ * Returns:
+ *  - ['ok'=>true, 'totals'=>[metricName=>string]]
+ *  - ['ok'=>false, 'error'=>string]
+ */
+function ga4_fetch_totals(
+    BetaAnalyticsDataClient $client,
+    string $propertyId,
+    mixed $dateRange,
+    ?FilterExpression $filterExpr,
+    array $metrics
+): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'fetch_totals', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
+    if (!ga4_is_valid_property_id($propertyId)) {
+        return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
+    }
+    $dr = ga4_date_range_from_mixed($dateRange);
+    if (!$dr instanceof DateRange) {
+        return ['ok' => false, 'error' => 'Invalid dateRange'];
+    }
+
+    $property = ga4_property_name($propertyId);
+    $mx = [];
+    foreach ($metrics as $m) {
+        if ($m instanceof Metric) {
+            $mx[] = $m;
+        } elseif (is_string($m) && trim($m) !== '') {
+            $mx[] = new Metric(['name' => trim($m)]);
+        } elseif (is_array($m) && isset($m['name']) && is_string($m['name']) && trim($m['name']) !== '') {
+            $mx[] = new Metric(['name' => trim((string)$m['name'])]);
+        }
+    }
+    if ($mx === []) {
+        return ['ok' => false, 'error' => 'No metrics provided'];
+    }
+
+    $req = [
+        'property' => $property,
+        'date_ranges' => [$dr],
+        'metrics' => $mx,
+    ];
+    if ($filterExpr instanceof FilterExpression) {
+        $req['dimension_filter'] = $filterExpr;
+    }
+
+    $res = ga4_run_report_safe($client, $req, [
+        'kind' => 'fetch_totals',
+        'property_id' => $propertyId,
+        'has_filter' => $filterExpr instanceof FilterExpression,
+    ]);
+    if (!($res['ok'] ?? false)) {
+        return $res;
+    }
+
+    $resp = $res['response'];
+    $rows = $resp->getRows();
+    if (count($rows) < 1) {
+        return ['ok' => true, 'totals' => []];
+    }
+    $row = $rows[0];
+    $names = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $names[] = (string)$mh->getName();
+    }
+    $out = [];
+    foreach ($names as $i => $name) {
+        $out[$name] = ga4_row_metric_value($row, $i, 0, 1);
+    }
+    return ['ok' => true, 'totals' => $out];
+}
+
+/**
+ * Timeseries (by date) for a single metric.
+ *
+ * Returns rows: [{date:'YYYY-MM-DD', value: float|int}]
+ */
+function ga4_fetch_timeseries_by_date(
+    BetaAnalyticsDataClient $client,
+    string $propertyId,
+    mixed $dateRange,
+    ?FilterExpression $filterExpr,
+    string $metric = 'totalUsers'
+): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'fetch_timeseries_by_date', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
+    if (!ga4_is_valid_property_id($propertyId)) {
+        return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
+    }
+    $dr = ga4_date_range_from_mixed($dateRange);
+    if (!$dr instanceof DateRange) {
+        return ['ok' => false, 'error' => 'Invalid dateRange'];
+    }
+    $metric = trim($metric);
+    if ($metric === '') {
+        $metric = 'totalUsers';
+    }
+
+    $property = ga4_property_name($propertyId);
+    $req = [
+        'property' => $property,
+        'date_ranges' => [$dr],
+        'dimensions' => [new Dimension(['name' => 'date'])],
+        'metrics' => [new Metric(['name' => $metric])],
+        'limit' => 10000,
+    ];
+    if ($filterExpr instanceof FilterExpression) {
+        $req['dimension_filter'] = $filterExpr;
+    }
+
+    $res = ga4_run_report_safe($client, $req, [
+        'kind' => 'fetch_timeseries_by_date',
+        'property_id' => $propertyId,
+        'metric' => $metric,
+        'has_filter' => $filterExpr instanceof FilterExpression,
+    ]);
+    if (!($res['ok'] ?? false)) {
+        return $res;
+    }
+
+    $resp = $res['response'];
+    $rows = [];
+    foreach ($resp->getRows() as $r) {
+        $dvs = $r->getDimensionValues();
+        $mvs = $r->getMetricValues();
+        $dateRaw = (count($dvs) > 0) ? (string)$dvs[0]->getValue() : '';
+        $valRaw = (count($mvs) > 0) ? (string)$mvs[0]->getValue() : '0';
+        $rows[] = [
+            'date' => ga4_format_date_yyyymmdd($dateRaw),
+            'value' => is_numeric($valRaw) ? (float)$valRaw : 0.0,
+        ];
+    }
+    return ['ok' => true, 'rows' => $rows];
+}
+
+/**
+ * Generic breakdown for a single dimension + metrics.
+ *
+ * Returns:
+ *  - ['ok'=>true, 'rows'=>[['dimension'=>string, 'metrics'=>[metricName=>string]], ...]]
+ */
+function ga4_fetch_breakdown(
+    BetaAnalyticsDataClient $client,
+    string $propertyId,
+    mixed $dateRange,
+    ?FilterExpression $filterExpr,
+    string $dimension,
+    array $metrics,
+    int $limit
+): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'fetch_breakdown', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
+    if (!ga4_is_valid_property_id($propertyId)) {
+        return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
+    }
+    $dr = ga4_date_range_from_mixed($dateRange);
+    if (!$dr instanceof DateRange) {
+        return ['ok' => false, 'error' => 'Invalid dateRange'];
+    }
+    $dimension = trim($dimension);
+    if ($dimension === '') {
+        return ['ok' => false, 'error' => 'Invalid dimension'];
+    }
+
+    $mx = [];
+    foreach ($metrics as $m) {
+        if ($m instanceof Metric) {
+            $mx[] = $m;
+        } elseif (is_string($m) && trim($m) !== '') {
+            $mx[] = new Metric(['name' => trim($m)]);
+        } elseif (is_array($m) && isset($m['name']) && is_string($m['name']) && trim($m['name']) !== '') {
+            $mx[] = new Metric(['name' => trim((string)$m['name'])]);
+        }
+    }
+    if ($mx === []) {
+        return ['ok' => false, 'error' => 'No metrics provided'];
+    }
+
+    $property = ga4_property_name($propertyId);
+    $req = [
+        'property' => $property,
+        'date_ranges' => [$dr],
+        'dimensions' => [new Dimension(['name' => $dimension])],
+        'metrics' => $mx,
+        'limit' => max(1, min(100, $limit)),
+    ];
+    if ($filterExpr instanceof FilterExpression) {
+        $req['dimension_filter'] = $filterExpr;
+    }
+
+    // Try to order by totalUsers (desc) if supported.
+    $metricNames = [];
+    foreach ($mx as $m) {
+        if (method_exists($m, 'getName')) {
+            $metricNames[] = (string)$m->getName();
+        }
+    }
+    if (in_array('totalUsers', $metricNames, true) && class_exists(OrderBy::class) && class_exists(MetricOrderBy::class)) {
+        try {
+            $req['order_bys'] = [new OrderBy([
+                'metric' => new MetricOrderBy(['metric_name' => 'totalUsers']),
+                'desc' => true,
+            ])];
+        } catch (Throwable $e) {
+            // Ignore if this client version doesn't support order_bys.
+        }
+    }
+
+    $res = ga4_run_report_safe($client, $req, [
+        'kind' => 'fetch_breakdown',
+        'property_id' => $propertyId,
+        'dimension' => $dimension,
+        'metrics' => $metricNames,
+        'limit' => $limit,
+        'has_filter' => $filterExpr instanceof FilterExpression,
+    ]);
+    if (!($res['ok'] ?? false)) {
+        return $res;
+    }
+
+    $resp = $res['response'];
+    $mh = [];
+    foreach ($resp->getMetricHeaders() as $h) {
+        $mh[] = (string)$h->getName();
+    }
+    $out = [];
+    foreach ($resp->getRows() as $r) {
+        $dvs = $r->getDimensionValues();
+        $dimVal = (count($dvs) > 0) ? trim((string)$dvs[0]->getValue()) : '';
+        if ($dimVal === '') {
+            $dimVal = '(not set)';
+        }
+        $mets = [];
+        foreach ($mh as $i => $name) {
+            $mets[$name] = ga4_row_metric_value($r, $i, 0, 1);
+        }
+        $out[] = ['dimension' => $dimVal, 'metrics' => $mets];
+    }
+    return ['ok' => true, 'rows' => $out];
 }
 
