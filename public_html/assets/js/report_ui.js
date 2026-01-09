@@ -21,6 +21,13 @@
     // eslint-disable-next-line no-console
     console.log('report_ui.js loaded', Object.keys(ROOT.sections || {}));
 
+    // TEMP debug (Phase 3.2)
+    // eslint-disable-next-line no-console
+    console.log(
+      "SEO GA4 users:",
+      ROOT.sections.traffic?.seo?.visits?.totals?.users
+    );
+
     var data = ROOT;
     var meta = data.meta || {};
     var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
@@ -544,6 +551,103 @@
     if (!ctx) return;
 
     charts.visits_line = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: safeArray(ts.labels),
+        datasets: [
+          {
+            label: (data.period && data.period.label) ? data.period.label : 'This month',
+            data: safeArray(ts.this),
+            borderColor: '#4f8cff',
+            backgroundColor: 'rgba(79,140,255,.10)',
+            tension: 0.25,
+            fill: false
+          },
+          {
+            label: (data.period && data.period.compare_to && data.period.compare_to.label) ? data.period.compare_to.label : 'Last year',
+            data: safeArray(ts.last),
+            borderColor: '#6ee7ff',
+            backgroundColor: 'rgba(110,231,255,.10)',
+            tension: 0.25,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: 'rgba(232,238,252,0.9)' } },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Lankytojų skaičius (vnt.)',
+              color: 'rgba(232,238,252,0.75)',
+              font: { weight: '700' }
+            },
+            grid: { color: 'rgba(255,255,255,0.06)' },
+            ticks: { color: 'rgba(232,238,252,0.85)' }
+          },
+          x: {
+            grid: { display: false },
+            ticks: { color: 'rgba(232,238,252,0.65)' }
+          }
+        }
+      }
+    });
+  }
+
+  function ensureSeoVisitsCanvas() {
+    var existing = document.getElementById('chart-seo-visits-line');
+    if (existing) return existing;
+    var sec = document.getElementById('seo-gsc');
+    if (!sec) return null;
+    var card = sec.querySelector ? (sec.querySelector('.card') || sec) : sec;
+    if (!card) return null;
+
+    var wrap = document.createElement('div');
+    wrap.className = 'report3__chartWrap';
+    var canvas = document.createElement('canvas');
+    canvas.id = 'chart-seo-visits-line';
+    canvas.height = 160;
+    wrap.appendChild(canvas);
+
+    var head = card.querySelector ? card.querySelector('.report3__sectionHead') : null;
+    if (head && head.parentNode === card) {
+      head.insertAdjacentElement('afterend', wrap);
+    } else {
+      card.insertBefore(wrap, card.firstChild);
+    }
+    return canvas;
+  }
+
+  function renderSeoVisitsLineChart() {
+    destroyChart('seo_visits_line');
+    if (!ensureChartJsOrWarn()) {
+      appendPlaceholderToSection('seo-gsc', 'Chart is unavailable (Chart.js not loaded).');
+      return;
+    }
+
+    var ts = null;
+    try {
+      ts = (ROOT.sections && ROOT.sections.traffic && ROOT.sections.traffic.seo && ROOT.sections.traffic.seo.visits)
+        ? ROOT.sections.traffic.seo.visits.timeseries
+        : null;
+    } catch (e) { ts = null; }
+
+    if (!ts || !Array.isArray(ts.labels)) return;
+    var canvas = ensureSeoVisitsCanvas();
+    if (!canvas) {
+      appendPlaceholderToSection('seo-gsc', 'Missing container: #seo-gsc (for SEO visits line chart)');
+      return;
+    }
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    charts.seo_visits_line = new Chart(ctx, {
       type: 'line',
       data: {
         labels: safeArray(ts.labels),
@@ -1510,6 +1614,7 @@
     // Re-render tables/charts for whichever report key is active.
     var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
     if (key === 'seo_report') {
+      renderSeoVisitsLineChart();
       buildSeoGscTable();
       buildSeoKeywordsTable();
       buildSeoBehaviorTable();
