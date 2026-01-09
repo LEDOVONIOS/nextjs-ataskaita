@@ -241,6 +241,109 @@
     return null;
   }
 
+  function normalizeTotalsPair(totals, metricKeys, aliases) {
+    var out = { this: {}, last: {} };
+    var t = isPlainObject(totals) ? totals : {};
+    var a = isPlainObject(aliases) ? aliases : {};
+
+    // Canonical: totals.this / totals.last
+    if (isPlainObject(t.this) || isPlainObject(t.last)) {
+      var tt = isPlainObject(t.this) ? t.this : {};
+      var tl = isPlainObject(t.last) ? t.last : {};
+      for (var i = 0; i < metricKeys.length; i++) {
+        var k = metricKeys[i];
+        var kAlt = a[k];
+        out.this[k] = (tt[k] != null) ? tt[k] : ((kAlt && tt[kAlt] != null) ? tt[kAlt] : null);
+        out.last[k] = (tl[k] != null) ? tl[k] : ((kAlt && tl[kAlt] != null) ? tl[kAlt] : null);
+      }
+      return out;
+    }
+
+    // Legacy scalar totals: users + last_users, etc.
+    var hasLastPrefix = false;
+    for (var p in t) {
+      if (!Object.prototype.hasOwnProperty.call(t, p)) continue;
+      if (String(p).indexOf('last_') === 0) { hasLastPrefix = true; break; }
+    }
+    if (hasLastPrefix) {
+      for (var j = 0; j < metricKeys.length; j++) {
+        var mk = metricKeys[j];
+        var mkAlt = a[mk];
+        out.this[mk] = (t[mk] != null) ? t[mk] : ((mkAlt && t[mkAlt] != null) ? t[mkAlt] : null);
+        out.last[mk] = (t['last_' + mk] != null) ? t['last_' + mk] : ((mkAlt && t['last_' + mkAlt] != null) ? t['last_' + mkAlt] : null);
+      }
+      return out;
+    }
+
+    // Phase 3 traffic tabs: totals.<metric> = { this, last }
+    for (var k2 = 0; k2 < metricKeys.length; k2++) {
+      var m2 = metricKeys[k2];
+      var m2Alt = a[m2];
+      var v = (t[m2] != null) ? t[m2] : ((m2Alt && t[m2Alt] != null) ? t[m2Alt] : null);
+      out.this[m2] = metricThis(v);
+      out.last[m2] = metricLast(v);
+    }
+    return out;
+  }
+
+  function normalizeBySourceRows(v, sourcesFallback) {
+    if (Array.isArray(v)) {
+      // Canonical rows: [{ key,label,this:{...}, last:{...} }, ...]
+      return v.filter(isPlainObject).map(function (row, idx) {
+        var key = (row.key != null) ? String(row.key) : ((row.source != null) ? String(row.source) : String(idx));
+        var label = (row.label != null) ? String(row.label) : key;
+        var t = isPlainObject(row.this) ? row.this : {};
+        var l = isPlainObject(row.last) ? row.last : {};
+        // Back-compat: allow legacy fields embedded in row
+        if (!Object.keys(l).length) {
+          for (var p in row) {
+            if (!Object.prototype.hasOwnProperty.call(row, p)) continue;
+            if (String(p).indexOf('last_') === 0) l[String(p).slice(5)] = row[p];
+          }
+        }
+        return { key: key, label: label, this: t, last: l };
+      });
+    }
+    if (isPlainObject(v)) {
+      var map = v;
+      var order = safeArray(sourcesFallback);
+      var rows = [];
+      var seen = Object.create(null);
+
+      function pushKey(k, label) {
+        if (!k) return;
+        var kk = String(k);
+        if (seen[kk]) return;
+        seen[kk] = 1;
+        var src = map[kk] || {};
+        var t = isPlainObject(src.this) ? src.this : (isPlainObject(src) ? src : {});
+        var l = isPlainObject(src.last) ? src.last : {};
+        // Legacy last_* fields
+        if (!Object.keys(l).length) {
+          for (var p in src) {
+            if (!Object.prototype.hasOwnProperty.call(src, p)) continue;
+            if (String(p).indexOf('last_') === 0) l[String(p).slice(5)] = src[p];
+          }
+        }
+        rows.push({ key: kk, label: String(label || kk), this: t, last: l });
+      }
+
+      if (order.length) {
+        for (var i = 0; i < order.length; i++) {
+          var s = order[i] || {};
+          pushKey(s.key != null ? String(s.key) : '', s.label);
+        }
+      } else {
+        for (var k in map) {
+          if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
+          pushKey(String(k), String(k));
+        }
+      }
+      return rows;
+    }
+    return [];
+  }
+
   function normalizeBySourceMap(v) {
     if (!v) return {};
     if (Array.isArray(v)) {
@@ -339,17 +442,18 @@
     var goals = (seg && seg.goals) ? seg.goals : {};
     var demo = (seg && seg.demographics) ? seg.demographics : {};
 
-    var vTotals = isPlainObject(visits.totals) ? visits.totals : {};
-    var bTotals = isPlainObject(behavior.totals) ? behavior.totals : {};
-    var sTotals = isPlainObject(sales.totals) ? sales.totals : {};
-
-    var vBy = normalizeBySourceMap(visits.by_source);
-    var bBy = normalizeBySourceMap(behavior.by_source);
-    var sBy = normalizeBySourceMap(sales.by_source);
-    var gBy = normalizeBySourceMap(goals.by_source);
+    var vTotalsPair = normalizeTotalsPair(visits.totals, ['users', 'new_users', 'sessions']);
+    var bTotalsPair = normalizeTotalsPair(behavior.totals, ['engagement_rate', 'pages_per_session', 'avg_session_duration_sec']);
+    var sTotalsPair = normalizeTotalsPair(sales.totals, ['conversion_rate', 'purchases', 'revenue'], { purchases: 'transactions' });
 
     var sources = safeArray(seg.sources);
-    if (!sources.length) sources = deriveSourcesFromBySourceMap(vBy);
+    var vRows = normalizeBySourceRows(visits.by_source, sources);
+    var bRows = normalizeBySourceRows(behavior.by_source, sources);
+    var sRows = normalizeBySourceRows(sales.by_source, sources);
+    var gRows = normalizeBySourceRows(goals.by_source, sources);
+    if (!sources.length && vRows.length) {
+      sources = vRows.map(function (r) { return { key: r.key, label: r.label }; });
+    }
 
     var ts = (visits && visits.timeseries) ? visits.timeseries : null;
     if (!ts || !Array.isArray(ts.labels)) ts = { labels: [], this: [], last: [] };
@@ -360,44 +464,33 @@
       visits: {
         timeseries: ts,
         totals: {
-          users: metricThis(vTotals.users),
-          new_users: metricThis(vTotals.new_users),
-          sessions: metricThis(vTotals.sessions),
-          last_users: metricLast(vTotals.users),
-          last_new_users: metricLast(vTotals.new_users),
-          last_sessions: metricLast(vTotals.sessions)
+          this: vTotalsPair.this,
+          last: vTotalsPair.last
         },
-        by_source: vBy
+        by_source: vRows
       },
       behavior: {
         totals: {
-          engagement_rate: metricThis(bTotals.engagement_rate),
-          pages_per_session: metricThis(bTotals.pages_per_session),
-          avg_session_duration_sec: metricThis(bTotals.avg_session_duration_sec),
-          last_engagement_rate: metricLast(bTotals.engagement_rate),
-          last_pages_per_session: metricLast(bTotals.pages_per_session),
-          last_avg_session_duration_sec: metricLast(bTotals.avg_session_duration_sec)
+          this: bTotalsPair.this,
+          last: bTotalsPair.last
         },
-        by_source: bBy
+        by_source: bRows
       },
       sales: {
         enabled: !!sales.enabled,
         totals: {
-          conversion_rate: metricThis(sTotals.conversion_rate),
-          transactions: metricThis((sTotals.transactions != null) ? sTotals.transactions : sTotals.purchases),
-          revenue: metricThis(sTotals.revenue),
-          last_conversion_rate: metricLast(sTotals.conversion_rate),
-          last_transactions: metricLast((sTotals.transactions != null) ? sTotals.transactions : sTotals.purchases),
-          last_revenue: metricLast(sTotals.revenue)
+          this: sTotalsPair.this,
+          last: sTotalsPair.last
         },
-        by_source: sBy
+        by_source: sRows
       },
       goals: {
         excluded_events: safeArray(goals.excluded_events),
         goal_names: safeArray(goals.goal_names),
-        totals_this: isPlainObject(goals.totals_this) ? goals.totals_this : { sessions: 0, goals: {} },
-        totals_last: isPlainObject(goals.totals_last) ? goals.totals_last : { sessions: 0, goals: {} },
-        by_source: gBy
+        totals: isPlainObject(goals.totals) ? goals.totals : null,
+        totals_this: isPlainObject(goals.totals_this) ? goals.totals_this : null,
+        totals_last: isPlainObject(goals.totals_last) ? goals.totals_last : null,
+        by_source: gRows
       },
       demographics: {
         gender: safeArray(demo.gender),
@@ -483,8 +576,8 @@
     }
 
     var srcs = safeArray(R.sources);
-    var totals = (R.visits && R.visits.totals) ? R.visits.totals : {};
-    var bySource = (R.visits && R.visits.by_source) ? R.visits.by_source : {};
+    var totalsPair = normalizeTotalsPair((R.visits && R.visits.totals) ? R.visits.totals : {}, ['users', 'new_users', 'sessions']);
+    var byRows = normalizeBySourceRows((R.visits && R.visits.by_source) ? R.visits.by_source : [], srcs);
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -498,34 +591,35 @@
 
     var rows = [];
     rows.push(lineRow('Pokytis', [
-      deltaBadge(totals.users, totals.last_users),
-      deltaBadge(totals.new_users, totals.last_new_users),
-      deltaBadge(totals.sessions, totals.last_sessions)
+      deltaBadge(totalsPair.this.users, totalsPair.last.users),
+      deltaBadge(totalsPair.this.new_users, totalsPair.last.new_users),
+      deltaBadge(totalsPair.this.sessions, totalsPair.last.sessions)
     ], true));
 
     rows.push(lineRow(thisRange, [
-      esc(fmtNumber(totals.users, 0)),
-      esc(fmtNumber(totals.new_users, 0)),
-      esc(fmtNumber(totals.sessions, 0))
+      esc(fmtNumber(totalsPair.this.users, 0)),
+      esc(fmtNumber(totalsPair.this.new_users, 0)),
+      esc(fmtNumber(totalsPair.this.sessions, 0))
     ], false));
 
     rows.push(lineRow(lastRange, [
-      esc(fmtNumber(totals.last_users, 0)),
-      esc(fmtNumber(totals.last_new_users, 0)),
-      esc(fmtNumber(totals.last_sessions, 0))
+      esc(fmtNumber(totalsPair.last.users, 0)),
+      esc(fmtNumber(totalsPair.last.new_users, 0)),
+      esc(fmtNumber(totalsPair.last.sessions, 0))
     ], false));
 
-    if (!srcs.length) {
+    if (!byRows.length) {
       rows.push(lineRow('—', ['—', '—', '—'], false));
     } else {
-      for (var i = 0; i < srcs.length; i++) {
-        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-        var label = sourceLabel(k, srcs[i] && srcs[i].label);
-        var s = bySource && k ? (bySource[k] || {}) : {};
+      for (var i = 0; i < byRows.length; i++) {
+        var r = byRows[i] || {};
+        var k = (r.key != null) ? String(r.key) : '';
+        var label = sourceLabel(k, r.label);
+        var t = isPlainObject(r.this) ? r.this : {};
         rows.push(lineRow(label, [
-          esc(fmtNumber(metricThis(s.users), 0)),
-          esc(fmtNumber(metricThis(s.new_users), 0)),
-          esc(fmtNumber(metricThis(s.sessions), 0))
+          esc(fmtNumber(t.users, 0)),
+          esc(fmtNumber(t.new_users, 0)),
+          esc(fmtNumber(t.sessions, 0))
         ], false));
       }
     }
@@ -545,8 +639,8 @@
     }
 
     var srcs = safeArray(R.sources);
-    var totals = (R.behavior && R.behavior.totals) ? R.behavior.totals : {};
-    var bySource = (R.behavior && R.behavior.by_source) ? R.behavior.by_source : {};
+    var totalsPair = normalizeTotalsPair((R.behavior && R.behavior.totals) ? R.behavior.totals : {}, ['engagement_rate', 'pages_per_session', 'avg_session_duration_sec']);
+    var byRows = normalizeBySourceRows((R.behavior && R.behavior.by_source) ? R.behavior.by_source : [], srcs);
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -560,34 +654,35 @@
 
     var rows = [];
     rows.push(lineRow('Pokytis', [
-      deltaBadge(totals.engagement_rate, totals.last_engagement_rate),
-      deltaBadge(totals.pages_per_session, totals.last_pages_per_session),
-      deltaBadge(totals.avg_session_duration_sec, totals.last_avg_session_duration_sec)
+      deltaBadge(totalsPair.this.engagement_rate, totalsPair.last.engagement_rate),
+      deltaBadge(totalsPair.this.pages_per_session, totalsPair.last.pages_per_session),
+      deltaBadge(totalsPair.this.avg_session_duration_sec, totalsPair.last.avg_session_duration_sec)
     ], true));
 
     rows.push(lineRow(thisRange, [
-      esc(fmtPctRate(totals.engagement_rate)),
-      esc(fmtNumber(totals.pages_per_session, 1)),
-      esc(fmtMinutesFromSeconds(totals.avg_session_duration_sec))
+      esc(fmtPctRate(totalsPair.this.engagement_rate)),
+      esc(fmtNumber(totalsPair.this.pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(totalsPair.this.avg_session_duration_sec))
     ], false));
 
     rows.push(lineRow(lastRange, [
-      esc(fmtPctRate(totals.last_engagement_rate)),
-      esc(fmtNumber(totals.last_pages_per_session, 1)),
-      esc(fmtMinutesFromSeconds(totals.last_avg_session_duration_sec))
+      esc(fmtPctRate(totalsPair.last.engagement_rate)),
+      esc(fmtNumber(totalsPair.last.pages_per_session, 1)),
+      esc(fmtMinutesFromSeconds(totalsPair.last.avg_session_duration_sec))
     ], false));
 
-    if (!srcs.length) {
+    if (!byRows.length) {
       rows.push(lineRow('—', ['—', '—', '—'], false));
     } else {
-      for (var i = 0; i < srcs.length; i++) {
-        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-        var label = sourceLabel(k, srcs[i] && srcs[i].label);
-        var s = bySource && k ? (bySource[k] || {}) : {};
+      for (var i = 0; i < byRows.length; i++) {
+        var r = byRows[i] || {};
+        var k = (r.key != null) ? String(r.key) : '';
+        var label = sourceLabel(k, r.label);
+        var t = isPlainObject(r.this) ? r.this : {};
         rows.push(lineRow(label, [
-          esc(fmtPctRate(metricThis(s.engagement_rate))),
-          esc(fmtNumber(metricThis(s.pages_per_session), 1)),
-          esc(fmtMinutesFromSeconds(metricThis(s.avg_session_duration_sec)))
+          esc(fmtPctRate(t.engagement_rate)),
+          esc(fmtNumber(t.pages_per_session, 1)),
+          esc(fmtMinutesFromSeconds(t.avg_session_duration_sec))
         ], false));
       }
     }
@@ -614,8 +709,8 @@
     }
 
     var srcs = safeArray(R.sources);
-    var totals = sales.totals || {};
-    var bySource = sales.by_source || {};
+    var totalsPair = normalizeTotalsPair(sales.totals || {}, ['conversion_rate', 'purchases', 'revenue'], { purchases: 'transactions' });
+    var byRows = normalizeBySourceRows(sales.by_source || [], srcs);
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -629,34 +724,36 @@
 
     var rows = [];
     rows.push(lineRow('Pokytis', [
-      deltaBadge(totals.conversion_rate, totals.last_conversion_rate),
-      deltaBadge(totals.transactions, totals.last_transactions),
-      deltaBadge(totals.revenue, totals.last_revenue)
+      deltaBadge(totalsPair.this.conversion_rate, totalsPair.last.conversion_rate),
+      deltaBadge(totalsPair.this.purchases, totalsPair.last.purchases),
+      deltaBadge(totalsPair.this.revenue, totalsPair.last.revenue)
     ], true));
 
     rows.push(lineRow(thisRange, [
-      esc(fmtPctRate(totals.conversion_rate)),
-      esc(fmtNumber(totals.transactions, 0)),
-      esc(fmtNumber(totals.revenue, 0))
+      esc(fmtPctRate(totalsPair.this.conversion_rate)),
+      esc(fmtNumber(totalsPair.this.purchases, 0)),
+      esc(fmtNumber(totalsPair.this.revenue, 2))
     ], false));
 
     rows.push(lineRow(lastRange, [
-      esc(fmtPctRate(totals.last_conversion_rate)),
-      esc(fmtNumber(totals.last_transactions, 0)),
-      esc(fmtNumber(totals.last_revenue, 0))
+      esc(fmtPctRate(totalsPair.last.conversion_rate)),
+      esc(fmtNumber(totalsPair.last.purchases, 0)),
+      esc(fmtNumber(totalsPair.last.revenue, 2))
     ], false));
 
-    if (!srcs.length) {
+    if (!byRows.length) {
       rows.push(lineRow('—', ['—', '—', '—'], false));
     } else {
-      for (var i = 0; i < srcs.length; i++) {
-        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-        var label = sourceLabel(k, srcs[i] && srcs[i].label);
-        var s = bySource && k ? (bySource[k] || {}) : {};
+      for (var i = 0; i < byRows.length; i++) {
+        var r = byRows[i] || {};
+        var k = (r.key != null) ? String(r.key) : '';
+        var label = sourceLabel(k, r.label);
+        var t = isPlainObject(r.this) ? r.this : {};
+        var purchases = (t.purchases != null) ? t.purchases : t.transactions;
         rows.push(lineRow(label, [
-          esc(fmtPctRate(metricThis(s.conversion_rate))),
-          esc(fmtNumber(metricThis((s.transactions != null) ? s.transactions : s.purchases), 0)),
-          esc(fmtNumber(metricThis(s.revenue), 0))
+          esc(fmtPctRate(t.conversion_rate)),
+          esc(fmtNumber(purchases, 0)),
+          esc(fmtNumber(t.revenue, 2))
         ], false));
       }
     }
@@ -704,9 +801,28 @@
     }
 
     var srcs = safeArray(R.sources);
-    var totalsThis = goals.totals_this || { sessions: 0, goals: {} };
-    var totalsLast = goals.totals_last || { sessions: 0, goals: {} };
-    var bySource = goals.by_source || {};
+    var byRows = normalizeBySourceRows(goals.by_source || [], srcs);
+
+    // Canonical: goals.totals.this/last contain sessions + goal counts (flat).
+    // Back-compat: goals.totals_this / totals_last contain sessions + goals map.
+    var totalsThis = null;
+    var totalsLast = null;
+    if (isPlainObject(goals.totals) && isPlainObject(goals.totals.this) && isPlainObject(goals.totals.last)) {
+      totalsThis = goals.totals.this;
+      totalsLast = goals.totals.last;
+    } else {
+      var tThis = isPlainObject(goals.totals_this) ? goals.totals_this : { sessions: 0, goals: {} };
+      var tLast = isPlainObject(goals.totals_last) ? goals.totals_last : { sessions: 0, goals: {} };
+      totalsThis = { sessions: tThis.sessions || 0 };
+      totalsLast = { sessions: tLast.sessions || 0 };
+      var gThis = isPlainObject(tThis.goals) ? tThis.goals : {};
+      var gLast = isPlainObject(tLast.goals) ? tLast.goals : {};
+      for (var gi = 0; gi < goalNames.length; gi++) {
+        var gk = String(goalNames[gi]);
+        totalsThis[gk] = gThis[gk] || 0;
+        totalsLast[gk] = gLast[gk] || 0;
+      }
+    }
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -714,27 +830,32 @@
     var headers = ['Apsilankymų keliai'].concat(goalNames.map(function (g) { return String(g); }));
     var rows = [];
 
+    rows.push(lineRow('Pokytis', goalNames.map(function (g) {
+      return deltaBadge(totalsThis[g], totalsLast[g]);
+    }), true));
+
     rows.push(lineRow(thisRange, goalNames.map(function (g) {
-      var cnt = totalsThis.goals ? totalsThis.goals[g] : 0;
-      return goalCell(cnt, totalsThis.sessions);
+      return goalCell(totalsThis[g] || 0, totalsThis.sessions || 0);
     }), false));
 
     rows.push(lineRow(lastRange, goalNames.map(function (g) {
-      var cnt = totalsLast.goals ? totalsLast.goals[g] : 0;
-      return goalCell(cnt, totalsLast.sessions);
+      return goalCell(totalsLast[g] || 0, totalsLast.sessions || 0);
     }), false));
 
-    if (!srcs.length) {
+    if (!byRows.length) {
       rows.push(lineRow('—', goalNames.map(function () { return '—'; }), false));
     } else {
-      for (var i = 0; i < srcs.length; i++) {
-        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-        var label = sourceLabel(k, srcs[i] && srcs[i].label);
-        var s = bySource && k ? (bySource[k] || {}) : {};
-        var sess = s.sessions || 0;
-        var gMap = s.goals || {};
+      for (var i = 0; i < byRows.length; i++) {
+        var r = byRows[i] || {};
+        var k = (r.key != null) ? String(r.key) : '';
+        var label = sourceLabel(k, r.label);
+        var t = isPlainObject(r.this) ? r.this : {};
+        var sess = (t.sessions != null) ? t.sessions : (r.sessions || 0);
+        // Back-compat: nested goals map
+        var gMap = isPlainObject(t.goals) ? t.goals : (isPlainObject(r.goals) ? r.goals : null);
         rows.push(lineRow(label, goalNames.map(function (g) {
-          return goalCell(gMap[g] || 0, sess);
+          var cnt = (t[g] != null) ? t[g] : (gMap ? (gMap[g] || 0) : 0);
+          return goalCell(cnt, sess);
         }), false));
       }
     }
