@@ -1,35 +1,3 @@
-document.documentElement.setAttribute('data-report-ui-loaded', '1');
-
-
-document.addEventListener("DOMContentLoaded", () => {
-  const ROOT = window.REPORT_DATA || window.Report_DATA;
-  const users = ROOT?.sections?.all_visitors_report?.visits?.totals?.users;
-
-  const el = document.createElement("div");
-  el.textContent = "SMOKE users = " + (users ?? "undefined");
-  el.style.cssText = "position:fixed;bottom:50px;right:10px;padding:8px 10px;background:#05b;color:#fff;z-index:99999;font:12px/1.2 sans-serif;border-radius:6px;";
-  document.body.appendChild(el);
-});
-
-
-console.log("report_ui.js start");
-
-const ROOT = window.REPORT_DATA || window.Report_DATA;
-console.log(
-  "ROOT?",
-  !!ROOT,
-  "sections keys:",
-  ROOT?.sections ? Object.keys(ROOT.sections) : null
-);
-
-document.addEventListener("DOMContentLoaded", () => {
-  console.log("DOMContentLoaded fired");
-  console.log(
-    "visitors users:",
-    ROOT?.sections?.all_visitors_report?.visits?.totals?.users
-  );
-});
-
 /* global Chart */
 (function () {
   'use strict';
@@ -59,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
     var project = data.project || {};
     var showSales = !!project.show_sales_section;
     var charts = Object.create(null);
+    var DEFAULT_EXCLUDED_EVENTS = ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
 
     function activeViewFromMetaOrUrl() {
       var view = (meta && meta.active_view) ? String(meta.active_view) : '';
@@ -180,6 +149,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function safeArray(v) {
     return Array.isArray(v) ? v : [];
+  }
+
+  function excludedEventsOrDefault(v) {
+    var arr = safeArray(v);
+    return arr.length ? arr : DEFAULT_EXCLUDED_EVENTS.slice();
   }
 
   function appendPlaceholderToSection(sectionId, message) {
@@ -503,7 +477,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     var goals = R.goals || {};
-    var excluded = safeArray(goals.excluded_events);
+    var excluded = excludedEventsOrDefault(goals.excluded_events);
     var goalNames = safeArray(goals.goal_names).filter(function (g) { return !isExcludedGoal(g, excluded); });
 
     if (!goalNames.length) {
@@ -903,7 +877,7 @@ document.addEventListener("DOMContentLoaded", () => {
     var R = getActiveReport();
     if (!R) return;
     var g = R.goals ? R.goals : {};
-    var excluded = safeArray(g.excluded_events || []);
+    var excluded = excludedEventsOrDefault(g.excluded_events);
     var items = safeArray(g.items || []).filter(function (it) {
       var name = it && it.goal != null ? String(it.goal) : '';
       return name !== '' && !isExcludedGoal(name, excluded);
@@ -1122,7 +1096,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function seoMetric(obj, key) {
     if (!obj || !key) return {};
-    return (obj && obj[key]) ? obj[key] : {};
+    if (obj && obj[key]) return obj[key];
+    // Backward-compatible aliases (older snapshots used *_keywords keys).
+    var alias = {
+      top5: 'top5_keywords',
+      top10: 'top10_keywords',
+      top30: 'top30_keywords'
+    };
+    var k2 = alias[key];
+    if (k2 && obj && obj[k2]) return obj[k2];
+    return {};
   }
 
   function buildSeoGscTable() {
@@ -1140,9 +1123,9 @@ document.addEventListener("DOMContentLoaded", () => {
     var rowsDef = [
       { key: 'clicks', label: 'Paspaudimai', digits: 0 },
       { key: 'impressions', label: 'Parodymai', digits: 0 },
-      { key: 'top5_keywords', label: 'Raktažodžių kiekis TOP 5', digits: 0 },
-      { key: 'top10_keywords', label: 'Raktažodžių kiekis TOP 10', digits: 0 },
-      { key: 'top30_keywords', label: 'Raktažodžių kiekis TOP 30', digits: 0 },
+      { key: 'top5', label: 'Raktažodžių kiekis TOP 5', digits: 0 },
+      { key: 'top10', label: 'Raktažodžių kiekis TOP 10', digits: 0 },
+      { key: 'top30', label: 'Raktažodžių kiekis TOP 30', digits: 0 },
       { key: 'indexed_pages', label: 'Indeksuotų puslapių kiekis (Google)', digits: 0 }
     ];
 
@@ -1307,7 +1290,7 @@ document.addEventListener("DOMContentLoaded", () => {
     var R = getActiveReport();
     if (!R) return;
     var g = R.goals ? R.goals : {};
-    var excluded = safeArray(g.excluded_events || []);
+    var excluded = excludedEventsOrDefault(g.excluded_events);
     var items = safeArray(g.items || []).filter(function (it) {
       var name = it && it.name != null ? String(it.name) : '';
       return name !== '' && !isExcludedGoal(name, excluded);
@@ -1372,6 +1355,216 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function qs(params) {
+    var out = [];
+    for (var k in params) {
+      if (!Object.prototype.hasOwnProperty.call(params, k)) continue;
+      out.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(params[k] == null ? '' : params[k])));
+    }
+    return out.join('&');
+  }
+
+  var didInitSeoNote = false;
+  var didLoadSeoNoteOnce = false;
+
+  function seoNoteContext() {
+    var pid = Number(project && project.id != null ? project.id : 0);
+    var year = Number((data.period && data.period.year != null) ? data.period.year : 0);
+    var month = Number((data.period && data.period.month != null) ? data.period.month : 0);
+    return { project_id: pid, year: year, month: month, scope: 'seo_work_summary' };
+  }
+
+  function setSeoNoteStatus(msg, isError) {
+    var el = document.getElementById('seo-work-save-status');
+    if (!el) return;
+    el.textContent = String(msg || '');
+    try {
+      el.style.color = isError ? '#fb7185' : '';
+    } catch (e) {}
+  }
+
+  function loadSeoWorkSummary() {
+    var ta = document.getElementById('seo_work_summary');
+    if (!ta) return;
+    var ctx = seoNoteContext();
+    if (!ctx.project_id || !ctx.year || !ctx.month) return;
+
+    setSeoNoteStatus('Kraunama…', false);
+    fetch('/note.php?' + qs(ctx), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (!json || !json.ok) throw new Error((json && json.error) ? String(json.error) : 'Load failed');
+        ta.value = String(json.note_text != null ? json.note_text : '');
+        setSeoNoteStatus('', false);
+        didLoadSeoNoteOnce = true;
+      })
+      .catch(function () {
+        setSeoNoteStatus('Nepavyko užkrauti pastabos.', true);
+      });
+  }
+
+  function saveSeoWorkSummary() {
+    var btn = document.getElementById('btn-seo-work-save');
+    var ta = document.getElementById('seo_work_summary');
+    if (!btn || !ta) return;
+    var ctx = seoNoteContext();
+    if (!ctx.project_id || !ctx.year || !ctx.month) return;
+
+    var fd = new FormData();
+    fd.append('csrf_token', String(window.CSRF_TOKEN || ''));
+    fd.append('project_id', String(ctx.project_id));
+    fd.append('year', String(ctx.year));
+    fd.append('month', String(ctx.month));
+    fd.append('scope', String(ctx.scope));
+    fd.append('note_text', String(ta.value || ''));
+
+    btn.disabled = true;
+    setSeoNoteStatus('Saugoma…', false);
+
+    fetch('/note.php', { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (!json || !json.ok) throw new Error((json && json.error) ? String(json.error) : 'Save failed');
+        setSeoNoteStatus('Išsaugota.', false);
+        setTimeout(function () { setSeoNoteStatus('', false); }, 1200);
+      })
+      .catch(function () {
+        setSeoNoteStatus('Nepavyko išsaugoti.', true);
+      })
+      .finally(function () { btn.disabled = false; });
+  }
+
+  function setupSeoWorkSummaryUI() {
+    if (didInitSeoNote) return;
+    var btn = document.getElementById('btn-seo-work-save');
+    var ta = document.getElementById('seo_work_summary');
+    if (!btn || !ta) return;
+    didInitSeoNote = true;
+    btn.addEventListener('click', saveSeoWorkSummary);
+  }
+
+  function setSidebarActive(view) {
+    var links = document.querySelectorAll('.report3__presetLink[data-report-view]');
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      var v = a.getAttribute('data-report-view');
+      var isActive = String(v || '') === String(view || '');
+      try {
+        a.classList.toggle('is-active', isActive);
+        if (isActive) a.setAttribute('aria-current', 'page');
+        else a.removeAttribute('aria-current');
+      } catch (e) {}
+    }
+  }
+
+  function toggleViews(activeView) {
+    var nodes = document.querySelectorAll('.report3__view[data-view]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var v = el.getAttribute('data-view');
+      if (String(v) === String(activeView)) el.style.display = '';
+      else el.style.display = 'none';
+    }
+  }
+
+  function updateQuickTabsForView(activeView) {
+    var tabs = document.querySelectorAll('#reportQuickTabs .report3__tab[data-tab]');
+    var map = null;
+    if (activeView === 'seo') {
+      map = { visits: '#seo-gsc', behavior: '#seo-behavior', sales: '#seo-sales', goals: '#seo-goals' };
+    } else if (activeView === 'ppc') {
+      map = { visits: '#ppc-visits', behavior: '#ppc-behavior', sales: '#ppc-sales', goals: '#ppc-goals' };
+    } else {
+      map = { visits: '#visits', behavior: '#behavior', sales: '#sales', goals: '#goals' };
+    }
+    for (var i = 0; i < tabs.length; i++) {
+      var t = tabs[i];
+      var key = t.getAttribute('data-tab');
+      if (!key) continue;
+      var href = map[key] || '#';
+      t.setAttribute('href', href);
+    }
+  }
+
+  function updateUrlViewParam(view) {
+    try {
+      var u = new URL(window.location.href);
+      u.searchParams.set('view', String(view || 'all'));
+      history.replaceState(null, '', u.toString());
+    } catch (e) {}
+  }
+
+  function reportKeyForView(view) {
+    if (view === 'seo') return 'seo_report';
+    if (view === 'ppc') return 'ppc_report';
+    return 'all_visitors_report';
+  }
+
+  function viewForReportKey(key) {
+    if (key === 'seo_report') return 'seo';
+    if (key === 'ppc_report') return 'ppc';
+    return 'all';
+  }
+
+  function renderActiveView() {
+    // Re-render tables/charts for whichever report key is active.
+    var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
+    if (key === 'seo_report') {
+      buildSeoGscTable();
+      buildSeoKeywordsTable();
+      buildSeoBehaviorTable();
+      if (showSales) buildSeoSalesTable();
+      buildSeoGoalsTable();
+      renderSeoCharts();
+      setupSeoWorkSummaryUI();
+      if (!didLoadSeoNoteOnce) loadSeoWorkSummary();
+      return;
+    }
+    if (key === 'ppc_report') {
+      buildPpcVisitsTable();
+      buildPpcCampaignsTable();
+      buildPpcKeywordsTable();
+      buildPpcCitiesTable();
+      buildPpcBehaviorTable();
+      buildPpcSalesTable();
+      buildPpcGoalsTable();
+      renderPpcLineChart();
+      return;
+    }
+    // all_visitors_report or segment views
+    buildVisitsTable();
+    buildBehaviorTable();
+    buildSalesTable();
+    buildGoalsTable();
+    renderLineChart();
+    renderDonuts();
+  }
+
+  function setupSidebarRouting() {
+    document.addEventListener('click', function (e) {
+      var link = e.target && e.target.closest ? e.target.closest('.report3__presetLink[data-report-view]') : null;
+      if (!link) return;
+      var view = String(link.getAttribute('data-report-view') || '');
+      if (view !== 'seo' && view !== 'all') return; // keep others as full reload for now
+
+      // Only intercept if both view containers exist (no broken state).
+      var hasAll = !!document.querySelector('.report3__view[data-view="all"]');
+      var hasSeo = !!document.querySelector('.report3__view[data-view="seo"]');
+      if (view === 'seo' && !hasSeo) return;
+      if (view === 'all' && !hasAll) return;
+
+      e.preventDefault();
+      window.ACTIVE_REPORT_KEY = reportKeyForView(view);
+      toggleViews(view);
+      setSidebarActive(view);
+      updateQuickTabsForView(view);
+      updateUrlViewParam(view);
+      renderActiveView();
+      // Keep the scroll position sensible when switching.
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e2) { window.scrollTo(0, 0); }
+    });
+  }
+
   function setupQuickScroll() {
     document.addEventListener('click', function (e) {
       var link = e.target && e.target.closest ? e.target.closest('.report3__tab[href^="#"]') : null;
@@ -1388,21 +1581,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Render everything
   smokeRenderUsersTotal();
-  buildVisitsTable();
-  buildBehaviorTable();
-  buildSalesTable();
-  buildGoalsTable();
-  renderLineChart();
-  renderDonuts();
-
-  buildSeoGscTable();
-  buildSeoKeywordsTable();
-  buildSeoBehaviorTable();
-  buildSeoSalesTable();
-  buildSeoGoalsTable();
-  renderSeoCharts();
-  setupSeoSendButton();
+  renderActiveView();
   setupQuickScroll();
+  setupSidebarRouting();
+
+  // Ensure the correct view is visible on initial load.
+  var initialView = viewForReportKey(window.ACTIVE_REPORT_KEY || 'all_visitors_report');
+  toggleViews(initialView);
+  setSidebarActive(initialView);
+  updateQuickTabsForView(initialView);
+  if (initialView === 'seo') {
+    setupSeoWorkSummaryUI();
+    loadSeoWorkSummary();
+  }
 
   buildPpcVisitsTable();
   buildPpcCampaignsTable();
