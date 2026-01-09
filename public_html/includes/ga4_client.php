@@ -96,6 +96,11 @@ function ga4_build_client(array $context = []): array
     ]);
 
     try {
+        // IMPORTANT:
+        // - BetaAnalyticsDataClient must use service-account auth only.
+        // - Do not use GA4_TOKEN_CACHE_FILE / google_auth.php token-cache flow here.
+        $scopes = ['https://www.googleapis.com/auth/analytics.readonly'];
+
         $raw = @file_get_contents($keyPath);
         if (!is_string($raw) || $raw === '') {
             $cached = [
@@ -105,8 +110,8 @@ function ga4_build_client(array $context = []): array
             log_error('GA4 client init failed: failed to read key file', ['keyPath' => $keyPath]);
             return $cached;
         }
-        $key = json_decode($raw, true);
-        if (!is_array($key) || $key === []) {
+        $creds = json_decode($raw, true);
+        if (!is_array($creds) || $creds === []) {
             $cached = [
                 'ok' => false,
                 'error' => 'Service account key file is not valid JSON',
@@ -118,9 +123,50 @@ function ga4_build_client(array $context = []): array
             return $cached;
         }
 
+        $jsonType = isset($creds['type']) && is_string($creds['type']) ? trim($creds['type']) : '';
+        $hasClientEmail = isset($creds['client_email']) && is_string($creds['client_email']) && trim($creds['client_email']) !== '';
+        $hasPrivateKey = isset($creds['private_key']) && is_string($creds['private_key']) && trim($creds['private_key']) !== '';
+
+        log_info('GA4 client build: credential JSON inspected', [
+            'keyPath' => $keyPath,
+            'json_type' => $jsonType !== '' ? $jsonType : null,
+            'has_client_email' => $hasClientEmail,
+            'has_private_key' => $hasPrivateKey,
+            'scopes' => $scopes,
+        ]);
+
+        $missingFields = [];
+        if ($jsonType === '') {
+            $missingFields[] = 'type';
+        }
+        if (!$hasClientEmail) {
+            $missingFields[] = 'client_email';
+        }
+        if (!$hasPrivateKey) {
+            $missingFields[] = 'private_key';
+        }
+        $invalidType = ($jsonType !== '' && $jsonType !== 'service_account') ? $jsonType : null;
+
+        if ($invalidType !== null || $missingFields !== []) {
+            $cached = [
+                'ok' => false,
+                'error' => 'Service account key JSON is not a valid service account credential',
+            ];
+            log_error('GA4 client init failed: invalid service account key JSON', [
+                'keyPath' => $keyPath,
+                'json_type' => $jsonType !== '' ? $jsonType : null,
+                'invalid_type' => $invalidType,
+                'missing_fields' => $missingFields,
+            ]);
+            return $cached;
+        }
+
         $client = new \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient([
             // analytics-data v0.22.x: pass credentials explicitly (path or decoded JSON array).
-            'credentials' => $key,
+            // Primary: decoded service-account key array.
+            // Fallback: GOOGLE_APPLICATION_CREDENTIALS env var (set above, if empty before).
+            'credentials' => $creds,
+            'scopes' => $scopes,
         ]);
         $cached = ['ok' => true, 'client' => $client];
         return $cached;
