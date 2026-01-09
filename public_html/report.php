@@ -439,20 +439,17 @@ function normalize_report_contract(array $snapshot, array $row): array
 
         $t = (array)$in['sections']['traffic'];
         $t['all'] = $ensureSegment($t['all'] ?? null);
+
+        // Phase 3.6: stop cloning "all" into segments; prefer real segment payloads.
+        // Back-compat: map older generator keys into the canonical UI keys when present.
+        $t['seo'] = $ensureSegment($t['seo'] ?? ($t['organic_search'] ?? null) ?? $t['all']);
+        $t['ppc'] = $ensureSegment($t['ppc'] ?? ($t['paid_search'] ?? null) ?? $t['all']);
+        $t['social_organic'] = $ensureSegment($t['social_organic'] ?? ($t['social'] ?? null) ?? $t['all']);
+        $t['social_paid'] = $ensureSegment($t['social_paid'] ?? ($t['social'] ?? null) ?? $t['all']);
+        $t['referral'] = $ensureSegment($t['referral'] ?? $t['all']);
+        $t['email'] = $ensureSegment($t['email'] ?? $t['all']);
+
         $in['sections']['traffic'] = $t;
-
-        // TEMP: SEO GA4 is a clone of "all" until filtering is implemented.
-        $in['sections']['traffic']['seo'] = $in['sections']['traffic']['all'];
-
-        // Keep existing PPC traffic segment if present; fallback to all.
-        $in['sections']['traffic']['ppc'] = $ensureSegment($in['sections']['traffic']['ppc'] ?? $in['sections']['traffic']['all']);
-
-        // STEP 1 — TEMPORARY CLONING (until real GA4 filters exist):
-        // After traffic.all is built, clone it into the additional segments.
-        $in['sections']['traffic']['social_organic'] = $in['sections']['traffic']['all'];
-        $in['sections']['traffic']['social_paid'] = $in['sections']['traffic']['all'];
-        $in['sections']['traffic']['referral'] = $in['sections']['traffic']['all'];
-        $in['sections']['traffic']['email'] = $in['sections']['traffic']['all'];
 
         return $in;
     };
