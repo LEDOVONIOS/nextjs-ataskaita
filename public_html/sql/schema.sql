@@ -57,3 +57,16 @@ CREATE TABLE IF NOT EXISTS monthly_notes (
   CONSTRAINT fk_monthly_notes_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Scoped notes for UI editing (e.g. SEO work summary) without modifying report snapshots.
+CREATE TABLE IF NOT EXISTS monthly_notes_scoped (
+  project_id INT UNSIGNED NOT NULL,
+  year INT NOT NULL,
+  month INT NOT NULL,
+  scope VARCHAR(64) NOT NULL,
+  note_text TEXT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (project_id, year, month, scope),
+  KEY idx_monthly_notes_scoped_project (project_id),
+  CONSTRAINT fk_monthly_notes_scoped_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

@@ -651,69 +651,7 @@ if ($role === 'ADMIN') {
     echo '</div>';
 }
 
-// Save SEO work summary directly into the report snapshot (UI editing for internal users only).
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    require_post();
-    csrf_verify_or_die();
-    if ($role !== 'ADMIN') {
-        http_response_code(403);
-        echo 'Forbidden';
-        exit;
-    }
-    $action = safe_string($_POST['action'] ?? '');
-    if ($action === 'save_seo_work_summary') {
-        $work = safe_string($_POST['seo_work_summary'] ?? '');
-        $rid = (int)($row['id'] ?? 0);
-        if ($rid <= 0) {
-            http_response_code(400);
-            echo 'Bad Request';
-            exit;
-        }
-
-        // Merge into snapshot (do not discard any other sections).
-        $snapshot['sections'] = is_array($snapshot['sections'] ?? null) ? (array)$snapshot['sections'] : [];
-        $snapshot['sections']['seo_report'] = is_array($snapshot['sections']['seo_report'] ?? null) ? (array)$snapshot['sections']['seo_report'] : [];
-        $snapshot['sections']['seo_report']['work_summary'] = $work;
-
-        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            http_response_code(500);
-            echo 'Failed to encode JSON';
-            exit;
-        }
-
-        $upd = $pdo->prepare('UPDATE monthly_reports SET data_json = ? WHERE id = ? LIMIT 1');
-        $upd->execute([$json, $rid]);
-
-        redirect('/report.php?id=' . $rid . '&view=seo');
-    }
-    if ($action === 'save_ppc_work_summary') {
-        $work = safe_string($_POST['ppc_work_summary'] ?? '');
-        $rid = (int)($row['id'] ?? 0);
-        if ($rid <= 0) {
-            http_response_code(400);
-            echo 'Bad Request';
-            exit;
-        }
-
-        // Merge into snapshot (do not discard any other sections).
-        $snapshot['sections'] = is_array($snapshot['sections'] ?? null) ? (array)$snapshot['sections'] : [];
-        $snapshot['sections']['ppc_report'] = is_array($snapshot['sections']['ppc_report'] ?? null) ? (array)$snapshot['sections']['ppc_report'] : [];
-        $snapshot['sections']['ppc_report']['work_summary'] = $work;
-
-        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            http_response_code(500);
-            echo 'Failed to encode JSON';
-            exit;
-        }
-
-        $upd = $pdo->prepare('UPDATE monthly_reports SET data_json = ? WHERE id = ? LIMIT 1');
-        $upd->execute([$json, $rid]);
-
-        redirect('/report.php?id=' . $rid . '&view=ppc');
-    }
-}
+// Note saving is handled via /note.php (AJAX + CSRF), scoped per project/month.
 ?>
 
 <div class="report3" id="reportApp">
@@ -739,6 +677,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
       <nav class="report3__presetNav">
         <?php $ridForLinks = (int)($row['id'] ?? 0); ?>
         <a class="report3__presetLink <?php echo $view === 'all' ? 'is-active' : ''; ?>"
+           data-report-view="all"
            href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=all'; ?>"
            <?php echo $view === 'all' ? 'aria-current="page"' : ''; ?>>
           <span class="report3__presetLabel">Visų tinklalapio lankytojų ataskaita</span>
@@ -769,12 +708,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
           <span class="report3__presetChevron">›</span>
         </a>
         <a class="report3__presetLink <?php echo $view === 'ppc' ? 'is-active' : ''; ?>"
+           data-report-view="ppc"
            href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=ppc'; ?>"
            <?php echo $view === 'ppc' ? 'aria-current="page"' : ''; ?>>
           <span class="report3__presetLabel">Mokamos reklamos paieškoje ataskaita</span>
           <span class="report3__presetChevron">›</span>
         </a>
         <a class="report3__presetLink <?php echo $view === 'seo' ? 'is-active' : ''; ?>"
+           data-report-view="seo"
            href="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=seo'; ?>"
            <?php echo $view === 'seo' ? 'aria-current="page"' : ''; ?>>
           <span class="report3__presetLabel">Srauto iš paieškos variklių ataskaita (SEO)</span>
@@ -784,8 +725,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     </aside>
 
     <div class="report3__content">
+      <div class="report3__tabs" role="navigation" aria-label="Quick scroll" id="reportQuickTabs">
+        <a class="report3__tab" href="#visits" data-tab="visits">Apsilankymų duomenys</a>
+        <a class="report3__tab" href="#behavior" data-tab="behavior">Lankytojų elgesys</a>
+        <?php if ($showSales): ?>
+          <a class="report3__tab" href="#sales" data-tab="sales">Pardavimų duomenys</a>
+        <?php endif; ?>
+        <a class="report3__tab" href="#goals" data-tab="goals">Įgyvendinti tikslai</a>
+      </div>
+
       <?php if ($view === 'ppc'): ?>
-        <section class="report3__section report-section" id="ppc-work">
+        <div class="report3__view" data-view="ppc">
+          <section class="report3__section report-section" id="ppc-work">
           <div class="card">
             <div class="report3__sectionHead">
               <div class="report3__sectionTitle">Darbų apžvalga</div>
@@ -817,16 +768,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
               Consent Mode v2 ir ribojamo dalies vartotojų duomenų pasiekimo.
             </div>
           </div>
-        </section>
-
-        <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
-          <a class="report3__tab" href="#ppc-visits">Apsilankymų duomenys</a>
-          <a class="report3__tab" href="#ppc-behavior">Lankytojų elgesys</a>
-          <?php if ($showSales): ?>
-            <a class="report3__tab" href="#ppc-sales">Pardavimų duomenys</a>
-          <?php endif; ?>
-          <a class="report3__tab" href="#ppc-goals">Įgyvendinti tikslai</a>
-        </div>
+          </section>
 
         <section class="report3__section report-section" id="ppc-visits">
           <div class="card">
@@ -921,17 +863,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             </div>
           </div>
         </section>
-      <?php elseif ($view === 'seo'): ?>
-        <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
-          <a class="report3__tab" href="#seo-work">Darbų apžvalga</a>
-          <a class="report3__tab" href="#seo-gsc">Google Search Console duomenys</a>
-          <a class="report3__tab" href="#seo-keywords">Stebimi raktažodžiai</a>
-          <a class="report3__tab" href="#seo-behavior">Organinių (SEO) lankytojų elgesys</a>
-          <a class="report3__tab" href="#seo-sales">Pardavimai iš organinės paieškos</a>
-          <a class="report3__tab" href="#seo-goals">Įgyvendinti tikslai (SEO)</a>
-          <a class="report3__tab" href="#seo-charts">Diagramos</a>
         </div>
-
+      <?php elseif ($view === 'seo'): ?>
+        <div class="report3__view" data-view="seo">
         <section class="report3__section report-section" id="seo-work">
           <div class="card">
             <div class="report3__sectionHead">
@@ -939,27 +873,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
               <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
             </div>
             <div class="report3__tableTitle">Atlikti SEO darbai / komentarai</div>
-            <?php
-              $seoSec = is_array($reportData['sections']['seo_report'] ?? null) ? (array)$reportData['sections']['seo_report'] : [];
-              $seoWork = (string)($seoSec['work_summary'] ?? ($reportData['notes']['work_summary'] ?? ''));
-              $seoWorkTrim = trim($seoWork);
-            ?>
-            <?php if ($role === 'ADMIN'): ?>
-              <form method="post" action="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=seo'; ?>">
-                <?php echo csrf_input(); ?>
-                <input type="hidden" name="action" value="save_seo_work_summary">
-                <div class="form-row">
-                  <textarea class="report3__textarea" id="seo_work_summary" name="seo_work_summary" rows="8" placeholder="Įveskite atliktus SEO darbus / komentarus..."><?php echo e($seoWork); ?></textarea>
-                </div>
-                <div class="card__actions">
-                  <button class="btn btn--primary" type="submit">Išsaugoti</button>
-                  <button class="btn" type="button" id="btn-send-client" <?php echo $seoWorkTrim === '' ? 'disabled' : ''; ?> data-requires-nonempty="#seo_work_summary">Siųsti klientui</button>
-                  <span class="muted report3__inlineNote">Siuntimas bus įgyvendintas vėliau. Šiuo metu tai tik UI logika.</span>
-                </div>
-              </form>
-            <?php else: ?>
-              <div class="report3__notesRead" id="seo_work_summary_read"><?php echo $seoWorkTrim !== '' ? nl2br(e($seoWorkTrim)) : '<span class="muted">—</span>'; ?></div>
-            <?php endif; ?>
+            <div class="form-row">
+              <textarea class="report3__textarea" id="seo_work_summary" rows="8" placeholder="Įveskite atliktus SEO darbus / komentarus..."></textarea>
+            </div>
+            <div class="card__actions">
+              <button class="btn btn--primary" type="button" id="btn-seo-work-save">Išsaugoti</button>
+              <span class="muted report3__inlineNote" id="seo-work-save-status" aria-live="polite"></span>
+            </div>
           </div>
         </section>
 
@@ -1007,6 +927,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
           </div>
         </section>
 
+        <?php if ($showSales): ?>
         <section class="report3__section report-section" id="seo-sales">
           <div class="card">
             <div class="report3__sectionHead">
@@ -1018,6 +939,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             </div>
           </div>
         </section>
+        <?php endif; ?>
 
         <section class="report3__section report-section" id="seo-goals">
           <div class="card">
@@ -1061,16 +983,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             </div>
           </div>
         </section>
-      <?php else: ?>
-        <div class="report3__tabs" role="navigation" aria-label="Quick scroll">
-          <a class="report3__tab" href="#visits">Apsilankymų duomenys</a>
-          <a class="report3__tab" href="#behavior">Lankytojų elgesys</a>
-          <?php if ($showSales): ?>
-            <a class="report3__tab" href="#sales">Pardavimų duomenys</a>
-          <?php endif; ?>
-          <a class="report3__tab" href="#goals">Įgyvendinti tikslai</a>
         </div>
-
+      <?php else: ?>
+        <div class="report3__view" data-view="all">
         <section class="report3__section report-section" id="visits">
           <div class="card">
             <div class="report3__sectionHead">
@@ -1178,6 +1093,127 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             </div>
           </div>
         </section>
+        </div>
+
+        <div class="report3__view" data-view="seo" style="display:none">
+          <section class="report3__section report-section" id="seo-work">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Darbų apžvalga</div>
+                <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
+              </div>
+              <div class="report3__tableTitle">Atlikti SEO darbai / komentarai</div>
+              <div class="form-row">
+                <textarea class="report3__textarea" id="seo_work_summary" rows="8" placeholder="Įveskite atliktus SEO darbus / komentarus..."></textarea>
+              </div>
+              <div class="card__actions">
+                <button class="btn btn--primary" type="button" id="btn-seo-work-save">Išsaugoti</button>
+                <span class="muted report3__inlineNote" id="seo-work-save-status" aria-live="polite"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="report3__section report-section" id="seo-gsc">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Google Search Console duomenys</div>
+                <div class="report3__sectionRange"><?php echo e($thisRange); ?> · <?php echo e($lastRange); ?></div>
+              </div>
+              <div class="table-wrap">
+                <table class="table table--compact" id="table-seo-gsc"></table>
+              </div>
+            </div>
+          </section>
+
+          <section class="report3__section report-section" id="seo-keywords">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Google pozicijos ir jų pokytis per laikotarpį</div>
+                <div class="report3__sectionRange">Stebimi raktažodžiai</div>
+              </div>
+              <div class="table-wrap">
+                <table class="table table--compact table--keywords" id="table-seo-keywords"></table>
+              </div>
+              <div class="report3__tableTools" aria-label="Pagination (placeholder)">
+                <div class="report3__pager">
+                  <button class="btn btn--small" type="button" disabled>‹</button>
+                  <span class="muted" id="seo-keywords-page">1</span>
+                  <button class="btn btn--small" type="button" disabled>›</button>
+                </div>
+                <div class="muted report3__pagerHint">Rikiavimas ir puslapiavimas bus įgyvendinti vėliau.</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="report3__section report-section" id="seo-behavior">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Organinių (SEO) lankytojų elgesys</div>
+                <div class="report3__sectionRange"><?php echo e($thisRange); ?> · <?php echo e($lastRange); ?></div>
+              </div>
+              <div class="table-wrap">
+                <table class="table table--compact" id="table-seo-behavior"></table>
+              </div>
+            </div>
+          </section>
+
+          <?php if ($showSales): ?>
+          <section class="report3__section report-section" id="seo-sales">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Pardavimai iš organinės paieškos</div>
+                <div class="report3__sectionRange"><?php echo e($thisRange); ?> · <?php echo e($lastRange); ?></div>
+              </div>
+              <div class="table-wrap">
+                <table class="table table--compact" id="table-seo-sales"></table>
+              </div>
+            </div>
+          </section>
+          <?php endif; ?>
+
+          <section class="report3__section report-section" id="seo-goals">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">Įgyvendinti tikslai (SEO)</div>
+                <div class="report3__sectionRange"><?php echo e($thisRange); ?> · <?php echo e($lastRange); ?></div>
+              </div>
+              <div class="table-wrap">
+                <table class="table table--compact" id="table-seo-goals"></table>
+              </div>
+            </div>
+          </section>
+
+          <section class="report3__section report-section" id="seo-charts">
+            <div class="card">
+              <div class="report3__sectionHead">
+                <div class="report3__sectionTitle">SEO pjūviai</div>
+                <div class="report3__sectionRange">Vieno laikotarpio pjūvis</div>
+              </div>
+              <div class="report3__donuts">
+                <div class="report3__donut card card--flat">
+                  <div class="report3__donutTitle">Įrenginiai</div>
+                  <canvas id="chart-donut-seo-devices" height="180"></canvas>
+                  <div class="report3__donutLegend" id="legend-donut-seo-devices"></div>
+                </div>
+                <div class="report3__donut card card--flat">
+                  <div class="report3__donutTitle">Amžius</div>
+                  <canvas id="chart-donut-seo-age" height="180"></canvas>
+                  <div class="report3__donutLegend" id="legend-donut-seo-age"></div>
+                </div>
+                <div class="report3__donut card card--flat">
+                  <div class="report3__donutTitle">Lytis</div>
+                  <canvas id="chart-donut-seo-gender" height="180"></canvas>
+                  <div class="report3__donutLegend" id="legend-donut-seo-gender"></div>
+                </div>
+                <div class="report3__donut card card--flat">
+                  <div class="report3__donutTitle">Miestai</div>
+                  <canvas id="chart-donut-seo-cities" height="180"></canvas>
+                  <div class="report3__donutLegend" id="legend-donut-seo-cities"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
       <?php endif; ?>
 
       <div class="card">
@@ -1200,11 +1236,7 @@ window.REPORT_DATA = <?php echo json_encode(
 // Ensure both point to the same object.
 if (window.REPORT_DATA && !window.Report_DATA) window.Report_DATA = window.REPORT_DATA;
 if (window.Report_DATA && !window.REPORT_DATA) window.REPORT_DATA = window.Report_DATA;
-</script>
-<script>
-// STEP 3: For now, always render the All Visitors report on this page.
-// (Later this will be wired to sidebar interactions.)
-window.ACTIVE_REPORT_KEY = "all_visitors_report";
+window.CSRF_TOKEN = <?php echo json_encode(csrf_token(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 </script>
 <script src="/assets/js/report_ui.js?v=<?= (int)@filemtime(__DIR__ . '/assets/js/report_ui.js') ?>"></script>
 
