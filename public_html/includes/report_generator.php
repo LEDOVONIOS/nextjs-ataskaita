@@ -887,89 +887,100 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         /** @var \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient $ga4Client */
         $ga4Client = $ga4ClientRes['client'];
 
-        // Preferred path: 1 totals query (all) + 1 totals query (by channel group) + daily series (all + by channel group).
-        $allTotals = ga4_fetch_totals_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
-        $groupTotals = ga4_fetch_totals_by_channel_group($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
-
-        if (($allTotals['ok'] ?? false) && ($groupTotals['ok'] ?? false)) {
-            $ga4TotalsThisByKey['all'] = (array)($allTotals['this'] ?? []);
-            $ga4TotalsLastByKey['all'] = (array)($allTotals['last'] ?? []);
-
-            foreach ((array)($groupTotals['by_group'] ?? []) as $group => $vals) {
-                $k = $trafficKeyForChannel((string)$group);
-                if ($k === null) {
-                    continue;
-                }
-                $ga4TotalsThisByKey[$k] = is_array($vals['this'] ?? null) ? (array)$vals['this'] : [];
-                $ga4TotalsLastByKey[$k] = is_array($vals['last'] ?? null) ? (array)$vals['last'] : [];
-            }
-
-            $tsAllThis = ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales);
-            $tsAllLast = ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales);
-            if (($tsAllThis['ok'] ?? false) && ($tsAllLast['ok'] ?? false)) {
-                $ga4TsRowsThisByKey['all'] = (array)($tsAllThis['rows'] ?? []);
-                $ga4TsRowsLastByKey['all'] = (array)($tsAllLast['rows'] ?? []);
-            } else {
-                $reportStatus = 'PARTIAL';
-                $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 all timeseries failed'];
-            }
-
-            $channelDim = (string)($groupTotals['dimension'] ?? '');
-            if ($channelDim !== '') {
-                $tsByThis = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $thisStart, $thisEnd, $includeSales);
-                $tsByLast = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $lastStart, $lastEnd, $includeSales);
-                if (($tsByThis['ok'] ?? false) && ($tsByLast['ok'] ?? false)) {
-                    foreach ((array)($tsByThis['rows'] ?? []) as $r) {
-                        if (!is_array($r)) {
-                            continue;
-                        }
-                        $k = $trafficKeyForChannel((string)($r['channel_group'] ?? ''));
-                        if ($k === null) {
-                            continue;
-                        }
-                        $ga4TsRowsThisByKey[$k][] = $r;
-                    }
-                    foreach ((array)($tsByLast['rows'] ?? []) as $r) {
-                        if (!is_array($r)) {
-                            continue;
-                        }
-                        $k = $trafficKeyForChannel((string)($r['channel_group'] ?? ''));
-                        if ($k === null) {
-                            continue;
-                        }
-                        $ga4TsRowsLastByKey[$k][] = $r;
-                    }
-                } else {
-                    $reportStatus = 'PARTIAL';
-                    $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 channel-group timeseries failed'];
-                }
-            }
+        $smoke = ga4_smoke_test($ga4Client, $ga4PropertyId);
+        if (!($smoke['ok'] ?? false)) {
+            $reportStatus = 'PARTIAL';
+            $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 smoke test failed'];
+            log_error('GA4 smoke test failed (snapshot aborted)', [
+                'project_id' => $projectId,
+                'ga4_property_id' => $ga4PropertyId,
+                'error' => (string)($smoke['error'] ?? 'unknown'),
+            ]);
         } else {
-            // Fallback path: per-segment filter (sessionDefaultChannelGroup; then sessionSourceMedium patterns)
-            foreach ($trafficKeys as $k) {
-                $segTotals = $k === 'all'
-                    ? $allTotals
-                    : ga4_fetch_totals_for_segment($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales, $k);
-                if (!($segTotals['ok'] ?? false)) {
-                    $reportStatus = 'PARTIAL';
-                    $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 totals failed for ' . $k];
-                    continue;
-                }
-                $ga4TotalsThisByKey[$k] = (array)($segTotals['this'] ?? []);
-                $ga4TotalsLastByKey[$k] = (array)($segTotals['last'] ?? []);
+            // Preferred path: 1 totals query (all) + 1 totals query (by channel group) + daily series (all + by channel group).
+            $allTotals = ga4_fetch_totals_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
+            $groupTotals = ga4_fetch_totals_by_channel_group($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales);
 
-                $tsThis = $k === 'all'
-                    ? ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales)
-                    : ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales, $k);
-                $tsLast = $k === 'all'
-                    ? ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales)
-                    : ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales, $k);
-                if (($tsThis['ok'] ?? false) && ($tsLast['ok'] ?? false)) {
-                    $ga4TsRowsThisByKey[$k] = (array)($tsThis['rows'] ?? []);
-                    $ga4TsRowsLastByKey[$k] = (array)($tsLast['rows'] ?? []);
+            if (($allTotals['ok'] ?? false) && ($groupTotals['ok'] ?? false)) {
+                $ga4TotalsThisByKey['all'] = (array)($allTotals['this'] ?? []);
+                $ga4TotalsLastByKey['all'] = (array)($allTotals['last'] ?? []);
+
+                foreach ((array)($groupTotals['by_group'] ?? []) as $group => $vals) {
+                    $k = $trafficKeyForChannel((string)$group);
+                    if ($k === null) {
+                        continue;
+                    }
+                    $ga4TotalsThisByKey[$k] = is_array($vals['this'] ?? null) ? (array)$vals['this'] : [];
+                    $ga4TotalsLastByKey[$k] = is_array($vals['last'] ?? null) ? (array)$vals['last'] : [];
+                }
+
+                $tsAllThis = ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales);
+                $tsAllLast = ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales);
+                if (($tsAllThis['ok'] ?? false) && ($tsAllLast['ok'] ?? false)) {
+                    $ga4TsRowsThisByKey['all'] = (array)($tsAllThis['rows'] ?? []);
+                    $ga4TsRowsLastByKey['all'] = (array)($tsAllLast['rows'] ?? []);
                 } else {
                     $reportStatus = 'PARTIAL';
-                    $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 timeseries failed for ' . $k];
+                    $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 all timeseries failed'];
+                }
+
+                $channelDim = (string)($groupTotals['dimension'] ?? '');
+                if ($channelDim !== '') {
+                    $tsByThis = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $thisStart, $thisEnd, $includeSales);
+                    $tsByLast = ga4_fetch_timeseries_by_channel_group($ga4Client, $ga4PropertyId, $channelDim, $lastStart, $lastEnd, $includeSales);
+                    if (($tsByThis['ok'] ?? false) && ($tsByLast['ok'] ?? false)) {
+                        foreach ((array)($tsByThis['rows'] ?? []) as $r) {
+                            if (!is_array($r)) {
+                                continue;
+                            }
+                            $k = $trafficKeyForChannel((string)($r['channel_group'] ?? ''));
+                            if ($k === null) {
+                                continue;
+                            }
+                            $ga4TsRowsThisByKey[$k][] = $r;
+                        }
+                        foreach ((array)($tsByLast['rows'] ?? []) as $r) {
+                            if (!is_array($r)) {
+                                continue;
+                            }
+                            $k = $trafficKeyForChannel((string)($r['channel_group'] ?? ''));
+                            if ($k === null) {
+                                continue;
+                            }
+                            $ga4TsRowsLastByKey[$k][] = $r;
+                        }
+                    } else {
+                        $reportStatus = 'PARTIAL';
+                        $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 channel-group timeseries failed'];
+                    }
+                }
+            } else {
+                // Fallback path: per-segment filter (sessionDefaultChannelGroup; then sessionSourceMedium patterns)
+                foreach ($trafficKeys as $k) {
+                    $segTotals = $k === 'all'
+                        ? $allTotals
+                        : ga4_fetch_totals_for_segment($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $lastStart, $lastEnd, $includeSales, $k);
+                    if (!($segTotals['ok'] ?? false)) {
+                        $reportStatus = 'PARTIAL';
+                        $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 totals failed for ' . $k];
+                        continue;
+                    }
+                    $ga4TotalsThisByKey[$k] = (array)($segTotals['this'] ?? []);
+                    $ga4TotalsLastByKey[$k] = (array)($segTotals['last'] ?? []);
+
+                    $tsThis = $k === 'all'
+                        ? ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales)
+                        : ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $thisStart, $thisEnd, $includeSales, $k);
+                    $tsLast = $k === 'all'
+                        ? ga4_fetch_timeseries_all($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales)
+                        : ga4_fetch_timeseries_for_segment($ga4Client, $ga4PropertyId, $lastStart, $lastEnd, $includeSales, $k);
+                    if (($tsThis['ok'] ?? false) && ($tsLast['ok'] ?? false)) {
+                        $ga4TsRowsThisByKey[$k] = (array)($tsThis['rows'] ?? []);
+                        $ga4TsRowsLastByKey[$k] = (array)($tsLast['rows'] ?? []);
+                    } else {
+                        $reportStatus = 'PARTIAL';
+                        $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 timeseries failed for ' . $k];
+                    }
                 }
             }
         }

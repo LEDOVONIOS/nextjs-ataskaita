@@ -184,6 +184,70 @@ function ga4_run_report_request_from_array(array $request): RunReportRequest
     return $req;
 }
 
+/**
+ * Version-tolerant runReport helper.
+ *
+ * Some google/analytics-data versions require a RunReportRequest object,
+ * while others accept an associative array. This helper tries both safely.
+ *
+ * Returns:
+ *  - ['ok'=>true, 'response'=>mixed, 'request_type'=>'RunReportRequest'|'array']
+ *  - ['ok'=>false, 'error'=>string]
+ */
+function ga4_run_report_request(BetaAnalyticsDataClient $client, array $payload, array $ctx): array
+{
+    try {
+        // Preferred: explicit RunReportRequest when class exists.
+        if (class_exists(RunReportRequest::class)) {
+            try {
+                $req = new RunReportRequest($payload);
+                $resp = $client->runReport($req);
+                return ['ok' => true, 'response' => $resp, 'request_type' => 'RunReportRequest'];
+            } catch (Throwable $e1) {
+                // Fallback: some versions don't accept array in constructor.
+                try {
+                    $req2 = ga4_run_report_request_from_array($payload);
+                    $resp2 = $client->runReport($req2);
+                    return ['ok' => true, 'response' => $resp2, 'request_type' => 'RunReportRequest'];
+                } catch (Throwable $e2) {
+                    // Final fallback: associative array request.
+                    $resp3 = $client->runReport($payload);
+                    return ['ok' => true, 'response' => $resp3, 'request_type' => 'array'];
+                }
+            }
+        }
+
+        // Fallback: associative array request.
+        $resp = $client->runReport($payload);
+        return ['ok' => true, 'response' => $resp, 'request_type' => 'array'];
+    } catch (Throwable $e) {
+        $msg = (string)$e->getMessage();
+        $decoded = null;
+        $tmp = json_decode($msg, true);
+        if (is_array($tmp)) {
+            $decoded = $tmp;
+        } elseif (preg_match('/(\{.*\})/s', $msg, $m) === 1) {
+            $tmp2 = json_decode($m[1], true);
+            if (is_array($tmp2)) {
+                $decoded = $tmp2;
+            }
+        }
+
+        $exc = [
+            'class' => get_class($e),
+            'code' => (int)$e->getCode(),
+            'message' => $msg,
+        ];
+
+        log_error('GA4 runReport failed', [
+            'exception' => $exc,
+            'exception_json' => $decoded,
+            'ctx' => $ctx,
+        ]);
+        return ['ok' => false, 'error' => $msg, 'exception' => $exc, 'exception_json' => $decoded];
+    }
+}
+
 function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, array $logCtx): array
 {
     try {
@@ -243,16 +307,56 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
             }
         }
 
-        $req = ga4_run_report_request_from_array($request);
-        $resp = $client->runReport($req);
-        return ['ok' => true, 'response' => $resp];
+        $call = ga4_run_report_request($client, $request, $logCtx);
+        if (!($call['ok'] ?? false)) {
+            return $call;
+        }
+        return ['ok' => true, 'response' => $call['response']];
     } catch (Throwable $e) {
-        log_error('GA4 runReport failed', [
+        log_error('GA4 runReport failed (safe wrapper)', [
             'error' => $e->getMessage(),
             'ctx' => $logCtx,
         ]);
         return ['ok' => false, 'error' => $e->getMessage()];
     }
+}
+
+/**
+ * Minimal smoke test to verify the GA4 Data API client can run a query.
+ *
+ * Runs: last 7 days, metrics: sessions, no dimensions.
+ */
+function ga4_smoke_test(BetaAnalyticsDataClient $client, string $propertyId): array
+{
+    $pid = trim($propertyId);
+    if ($pid === '' || !ga4_is_valid_property_id($pid)) {
+        return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
+    }
+
+    $property = ga4_property_name($pid);
+    $payload = [
+        'property' => $property,
+        'date_ranges' => [new DateRange(['start_date' => '7daysAgo', 'end_date' => 'today'])],
+        'metrics' => [new Metric(['name' => 'sessions'])],
+    ];
+
+    $res = ga4_run_report_request($client, $payload, ['kind' => 'smoke_test', 'property_id' => $pid]);
+    if (!($res['ok'] ?? false)) {
+        log_error('GA4 smoke test failed', [
+            'property_id' => $pid,
+            'error' => (string)($res['error'] ?? 'unknown'),
+            'exception' => (is_array($res['exception'] ?? null) ? (array)$res['exception'] : null),
+            'exception_json' => (is_array($res['exception_json'] ?? null) ? (array)$res['exception_json'] : null),
+            'ctx' => ['kind' => 'smoke_test'],
+        ]);
+        return ['ok' => false, 'error' => (string)($res['error'] ?? 'GA4 smoke test failed')];
+    }
+
+    log_info('GA4 smoke test ok', [
+        'property_id' => $pid,
+        'request_type' => (string)($res['request_type'] ?? ''),
+    ]);
+    return ['ok' => true];
 }
 
 /**
@@ -275,8 +379,8 @@ function ga4_try_channel_group_dimension(
     array $dateRanges,
     array $metrics
 ): array {
-    // Use GA4 Data API v1 schema names (prefer defaultChannelGroup).
-    $dimCandidates = ['defaultChannelGroup', 'sessionDefaultChannelGroup'];
+    // Do not use defaultChannelGroup (incompatible with several metric combos). Prefer sessionDefaultChannelGroup.
+    $dimCandidates = ['sessionDefaultChannelGroup', 'sessionChannelGroup'];
     foreach ($dimCandidates as $dim) {
         $req = [
             'property' => $property,
@@ -285,7 +389,7 @@ function ga4_try_channel_group_dimension(
             'metrics' => $metrics,
             'limit' => 250,
         ];
-        $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_by_channel_group', 'dimension' => $dim]);
+        $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_by_channel_group', 'dimension_candidate' => $dim]);
         if ($res['ok']) {
             $resp = $res['response'];
             $usedDim = $dim;
@@ -293,6 +397,11 @@ function ga4_try_channel_group_dimension(
             if (count($dhs) > 0) {
                 $usedDim = (string)$dhs[0]->getName();
             }
+            log_info('GA4 channel group dimension selected', [
+                'candidate' => $dim,
+                'used' => $usedDim,
+                'kind' => 'totals_by_channel_group',
+            ]);
             return ['ok' => true, 'dimension' => $usedDim, 'response' => $resp];
         }
     }
@@ -695,7 +804,7 @@ function ga4_segment_channel_group_name(string $trafficKey): ?string
 
 function ga4_segment_fallback_regex(string $trafficKey): ?string
 {
-    // Fallback patterns for sessionSourceMedium when defaultChannelGroup is unavailable.
+    // Fallback patterns for sessionSourceMedium when channel-group filtering is unavailable.
     // Keep them conservative to avoid cross-channel leakage.
     return match ($trafficKey) {
         'seo' => ' / organic',
@@ -708,7 +817,11 @@ function ga4_segment_fallback_regex(string $trafficKey): ?string
     };
 }
 
-function ga4_segment_dimension_filter(string $trafficKey, bool $preferChannelGroup = true): ?FilterExpression
+function ga4_segment_dimension_filter(
+    string $trafficKey,
+    bool $preferChannelGroup = true,
+    string $channelGroupField = 'sessionDefaultChannelGroup'
+): ?FilterExpression
 {
     if ($trafficKey === 'all') {
         return null;
@@ -717,7 +830,7 @@ function ga4_segment_dimension_filter(string $trafficKey, bool $preferChannelGro
     if ($preferChannelGroup) {
         $channelName = ga4_segment_channel_group_name($trafficKey);
         if ($channelName !== null) {
-            return ga4_string_filter('defaultChannelGroup', MatchType::EXACT, $channelName, false);
+            return ga4_string_filter($channelGroupField, MatchType::EXACT, $channelName, false);
         }
     }
 
@@ -756,7 +869,7 @@ function ga4_fetch_totals_for_segment(
         new DateRange(['start_date' => $lastStart, 'end_date' => $lastEnd]),
     ];
 
-    $dimFilter = ga4_segment_dimension_filter($trafficKey, true);
+    $dimFilter = ga4_segment_dimension_filter($trafficKey, true, 'sessionDefaultChannelGroup');
     $metrics = [
         new Metric(['name' => 'totalUsers']),
         new Metric(['name' => 'newUsers']),
@@ -776,7 +889,12 @@ function ga4_fetch_totals_for_segment(
         'metrics' => $metrics,
         'dimension_filter' => $dimFilter,
     ];
-    $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_segment', 'trafficKey' => $trafficKey, 'filter' => 'channel_group']);
+    $res = ga4_run_report_safe($client, $req, [
+        'kind' => 'totals_segment',
+        'trafficKey' => $trafficKey,
+        'filter' => 'channel_group',
+        'filter_field' => 'sessionDefaultChannelGroup',
+    ]);
 
     $usedPageViewsFallback = false;
     $usedFilterFallback = false;
@@ -797,7 +915,67 @@ function ga4_fetch_totals_for_segment(
             $metrics[] = new Metric(['name' => 'totalRevenue']);
         }
         $req['metrics'] = $metrics;
-        $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_segment', 'trafficKey' => $trafficKey, 'filter' => 'channel_group', 'fallback' => 'screenPageViews']);
+        $res = ga4_run_report_safe($client, $req, [
+            'kind' => 'totals_segment',
+            'trafficKey' => $trafficKey,
+            'filter' => 'channel_group',
+            'filter_field' => 'sessionDefaultChannelGroup',
+            'fallback' => 'screenPageViews',
+        ]);
+    }
+
+    // Retry #1b: alternate channel group field (still no defaultChannelGroup).
+    if (!$res['ok']) {
+        $alt = ga4_segment_dimension_filter($trafficKey, true, 'sessionChannelGroup');
+        if ($alt instanceof FilterExpression) {
+            $req['dimension_filter'] = $alt;
+
+            // Reset metrics for a clean retry (then re-apply pages/session fallback if needed).
+            $metrics = [
+                new Metric(['name' => 'totalUsers']),
+                new Metric(['name' => 'newUsers']),
+                new Metric(['name' => 'sessions']),
+                new Metric(['name' => 'engagementRate']),
+                new Metric(['name' => 'averageSessionDuration']),
+                new Metric(['name' => 'screenPageViewsPerSession']),
+            ];
+            if ($includeSales) {
+                $metrics[] = new Metric(['name' => 'transactions']);
+                $metrics[] = new Metric(['name' => 'totalRevenue']);
+            }
+            $req['metrics'] = $metrics;
+
+            $res = ga4_run_report_safe($client, $req, [
+                'kind' => 'totals_segment',
+                'trafficKey' => $trafficKey,
+                'filter' => 'channel_group',
+                'filter_field' => 'sessionChannelGroup',
+            ]);
+
+            if (!$res['ok'] && str_contains((string)$res['error'], 'screenPageViewsPerSession')) {
+                $usedPageViewsFallback = true;
+                $metrics2 = [
+                    new Metric(['name' => 'totalUsers']),
+                    new Metric(['name' => 'newUsers']),
+                    new Metric(['name' => 'sessions']),
+                    new Metric(['name' => 'engagementRate']),
+                    new Metric(['name' => 'averageSessionDuration']),
+                    new Metric(['name' => 'screenPageViews']),
+                ];
+                if ($includeSales) {
+                    $metrics2[] = new Metric(['name' => 'transactions']);
+                    $metrics2[] = new Metric(['name' => 'totalRevenue']);
+                }
+                $req['metrics'] = $metrics2;
+                $res = ga4_run_report_safe($client, $req, [
+                    'kind' => 'totals_segment',
+                    'trafficKey' => $trafficKey,
+                    'filter' => 'channel_group',
+                    'filter_field' => 'sessionChannelGroup',
+                    'fallback' => 'screenPageViews',
+                ]);
+            }
+        }
     }
 
     // Retry #2: channel group filter fallback to sessionSourceMedium regex
@@ -890,7 +1068,7 @@ function ga4_fetch_timeseries_for_segment(
         $metrics[] = new Metric(['name' => 'totalRevenue']);
     }
 
-    $dimFilter = ga4_segment_dimension_filter($trafficKey, true);
+    $dimFilter = ga4_segment_dimension_filter($trafficKey, true, 'sessionDefaultChannelGroup');
     $req = [
         'property' => $property,
         'date_ranges' => [new DateRange(['start_date' => $startDate, 'end_date' => $endDate])],
@@ -899,9 +1077,27 @@ function ga4_fetch_timeseries_for_segment(
         'dimension_filter' => $dimFilter,
         'limit' => 10000,
     ];
-    $res = ga4_run_report_safe($client, $req, ['kind' => 'timeseries_segment', 'trafficKey' => $trafficKey, 'filter' => 'channel_group']);
+    $res = ga4_run_report_safe($client, $req, [
+        'kind' => 'timeseries_segment',
+        'trafficKey' => $trafficKey,
+        'filter' => 'channel_group',
+        'filter_field' => 'sessionDefaultChannelGroup',
+    ]);
 
     $usedFilterFallback = false;
+    if (!$res['ok']) {
+        // Retry with alternate channel group field (still no defaultChannelGroup).
+        $alt = ga4_segment_dimension_filter($trafficKey, true, 'sessionChannelGroup');
+        if ($alt instanceof FilterExpression) {
+            $req['dimension_filter'] = $alt;
+            $res = ga4_run_report_safe($client, $req, [
+                'kind' => 'timeseries_segment',
+                'trafficKey' => $trafficKey,
+                'filter' => 'channel_group',
+                'filter_field' => 'sessionChannelGroup',
+            ]);
+        }
+    }
     if (!$res['ok']) {
         $dimFilter = ga4_segment_dimension_filter($trafficKey, false);
         $req['dimension_filter'] = $dimFilter;
