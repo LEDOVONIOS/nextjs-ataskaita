@@ -46,10 +46,6 @@ if ($resolvedKeyPath !== '' && $resolvedKeyPath[0] !== '/' && !preg_match('/^[A-
 
 $keyOk = ($resolvedKeyPath !== '') && is_file($resolvedKeyPath);
 
-$extJsonOk = extension_loaded('json');
-$extCurlOk = extension_loaded('curl');
-$extOpenSslOk = extension_loaded('openssl');
-
 render_header('GA4 Requirements');
 ?>
 
@@ -69,9 +65,6 @@ render_header('GA4 Requirements');
         <?php
           echo ga4_req_row('vendor/autoload.php exists', $autoloadOk, $autoloadPath);
           echo ga4_req_row($keyPathSource . ' file exists', $keyOk, $resolvedKeyPath !== '' ? $resolvedKeyPath : '(empty)');
-          echo ga4_req_row('PHP extension: json', $extJsonOk, 'extension_loaded("json")');
-          echo ga4_req_row('PHP extension: curl', $extCurlOk, 'extension_loaded("curl")');
-          echo ga4_req_row('PHP extension: openssl', $extOpenSslOk, 'extension_loaded("openssl")');
         ?>
       </tbody>
     </table>

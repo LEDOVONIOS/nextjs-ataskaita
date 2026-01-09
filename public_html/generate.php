@@ -13,7 +13,7 @@ require_once __DIR__ . '/includes/layout.php';
 require_admin();
 $pdo = db();
 
-// GA4 diagnostics: Composer vendor autoload is required for GA4 Data API client.
+// GA4 diagnostics: if Composer autoload is missing, ga4_build_client() would return ok=false.
 $ga4VendorAutoload = __DIR__ . '/vendor/autoload.php';
 $ga4VendorMissing = !is_file($ga4VendorAutoload);
 
@@ -170,7 +170,7 @@ render_header('Generate Report');
 
 <?php if ($ga4VendorMissing): ?>
   <div class="alert alert--warn">
-    GA4 disabled: missing /vendor/autoload.php. Upload vendor/ (composer install) to enable GA4.
+    GA4 disabled: missing /public_html/vendor/autoload.php. Upload vendor/ (composer install) to enable GA4.
   </div>
 <?php endif; ?>
 
