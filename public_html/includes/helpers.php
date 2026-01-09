@@ -68,18 +68,32 @@ function get_report_note(int $project_id, int $year, int $month, string $scope):
     if (!function_exists('db')) {
         return null;
     }
-    $pdo = db();
-    $stmt = $pdo->prepare('
-        SELECT content
-        FROM notes
-        WHERE project_id = ? AND year = ? AND month = ? AND scope = ?
-        LIMIT 1
-    ');
-    $stmt->execute([$project_id, $year, $month, $scope]);
-    $val = $stmt->fetchColumn();
-    if ($val === false) {
+    try {
+        $pdo = db();
+        $stmt = $pdo->prepare('
+            SELECT note_text
+            FROM monthly_notes_scoped
+            WHERE project_id = ? AND year = ? AND month = ? AND scope = ?
+            LIMIT 1
+        ');
+        $stmt->execute([$project_id, $year, $month, $scope]);
+        $val = $stmt->fetchColumn();
+        if ($val === false) {
+            return null;
+        }
+        return is_string($val) ? $val : '';
+    } catch (Throwable $e) {
+        // Notes are optional; never break report rendering if notes storage is missing/misconfigured.
+        if (function_exists('log_warn')) {
+            log_warn('get_report_note failed', [
+                'project_id' => $project_id,
+                'year' => $year,
+                'month' => $month,
+                'scope' => $scope,
+                'error' => $e->getMessage(),
+            ]);
+        }
         return null;
     }
-    return is_string($val) ? $val : '';
 }
 
