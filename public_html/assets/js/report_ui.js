@@ -7,37 +7,35 @@
   var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
   var project = data.project || {};
   var showSales = !!project.show_sales_section;
-  var activeSegmentKey = (meta && meta.active_segment_key) ? String(meta.active_segment_key) : '';
-  var isSegmentView = !!activeSegmentKey;
-  var segmentReports = (data.sections && data.sections.segment_reports) ? data.sections.segment_reports : null;
-  var segmentReport = null;
-  if (isSegmentView && segmentReports && segmentReports[activeSegmentKey]) {
-    segmentReport = segmentReports[activeSegmentKey];
-  }
+  var activeView = (meta && meta.active_view) ? String(meta.active_view) : '';
 
-  // "All visitors" UI is reused for segment reports; we just swap the payload.
-  // If a report snapshot doesn't contain segment data yet, fall back to placeholders (not to "all visitors" data).
-  var allReport = segmentReport || ((data.sections && data.sections.all_visitors_report) ? data.sections.all_visitors_report : null);
-  if (isSegmentView && !segmentReport) {
-    allReport = {
-      segment_key: activeSegmentKey,
-      sources: [],
-      timeseries: { labels: [], this: [], last: [] },
-      visits: { totals: {}, by_source: {} },
-      behavior: { totals: {}, by_source: {} },
-      sales: { enabled: showSales, totals: {}, by_source: {} },
-      goals: {
-        excluded_events: ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
-        goal_names: [],
-        totals_this: { sessions: 0, goals: {} },
-        totals_last: { sessions: 0, goals: {} },
-        by_source: {}
-      },
-      demographics: { gender: [], browsers: [], devices: [], age: [], cities: [] }
-    };
-  }
-  var seoReport = (data.sections && data.sections.seo_report) ? data.sections.seo_report : null;
-  var ppcReport = (data.sections && data.sections.ppc_report) ? data.sections.ppc_report : null;
+  // Determine active report key based on current view (sidebar selection / route).
+  // Schema: window.REPORT_DATA.sections.<reportKey>.<section>
+  (function deriveActiveReportKey() {
+    var view = activeView;
+    if (!view) {
+      try {
+        view = String((new URLSearchParams(window.location.search)).get('view') || '');
+      } catch (e) {
+        view = '';
+      }
+    }
+
+    var key = 'all_visitors_report';
+    if (view === 'seo') key = 'seo_report';
+    else if (view === 'ppc') key = 'ppc_report';
+    else if (view && view !== 'all') {
+      // Segment reports: use their keys accordingly (prefer existing section keys).
+      var secs = (data && data.sections) ? data.sections : {};
+      if (secs && secs[view]) key = view;
+      else if (secs && secs[view + '_report']) key = view + '_report';
+      else key = view;
+    }
+
+    window.ACTIVE_REPORT_KEY = key;
+  })();
+
+  var isSegmentView = !!(window.ACTIVE_REPORT_KEY && window.ACTIVE_REPORT_KEY !== 'all_visitors_report' && window.ACTIVE_REPORT_KEY !== 'seo_report' && window.ACTIVE_REPORT_KEY !== 'ppc_report');
   var charts = Object.create(null);
 
   var elVisitsTable = document.getElementById('table-visits');
@@ -136,6 +134,21 @@
     return Array.isArray(v) ? v : [];
   }
 
+  var didWarnMissingActiveReport = false;
+  function getActiveReport() {
+    var root = window.REPORT_DATA || {};
+    var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
+    var out = (root.sections && root.sections[key]) ? root.sections[key] : null;
+    if (!out && !didWarnMissingActiveReport) {
+      didWarnMissingActiveReport = true;
+      try {
+        // eslint-disable-next-line no-console
+        console.warn('[report_ui] Active report missing:', key, 'available:', Object.keys((window.REPORT_DATA && window.REPORT_DATA.sections) || {}));
+      } catch (e) {}
+    }
+    return out;
+  }
+
   function sourceLabel(key, fallback) {
     // Ensure required labels even if snapshot used older labels.
     var overrides = {
@@ -160,12 +173,13 @@
   }
 
   function buildVisitsTable() {
-    if (!allReport) return;
     if (!elVisitsTable) return;
+    var R = getActiveReport();
+    if (!R) return;
 
-    var srcs = safeArray(allReport.sources);
-    var totals = (allReport.visits && allReport.visits.totals) ? allReport.visits.totals : {};
-    var bySource = (allReport.visits && allReport.visits.by_source) ? allReport.visits.by_source : {};
+    var srcs = safeArray(R.sources);
+    var totals = (R.visits && R.visits.totals) ? R.visits.totals : {};
+    var bySource = (R.visits && R.visits.by_source) ? R.visits.by_source : {};
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -211,12 +225,13 @@
   }
 
   function buildBehaviorTable() {
-    if (!allReport) return;
     if (!elBehaviorTable) return;
+    var R = getActiveReport();
+    if (!R) return;
 
-    var srcs = safeArray(allReport.sources);
-    var totals = (allReport.behavior && allReport.behavior.totals) ? allReport.behavior.totals : {};
-    var bySource = (allReport.behavior && allReport.behavior.by_source) ? allReport.behavior.by_source : {};
+    var srcs = safeArray(R.sources);
+    var totals = (R.behavior && R.behavior.totals) ? R.behavior.totals : {};
+    var bySource = (R.behavior && R.behavior.by_source) ? R.behavior.by_source : {};
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -262,17 +277,18 @@
   }
 
   function buildSalesTable() {
-    if (!allReport) return;
     if (!showSales) return;
     if (!elSalesTable) return;
+    var R = getActiveReport();
+    if (!R) return;
 
-    var sales = allReport.sales || {};
+    var sales = R.sales || {};
     if (!sales.enabled) {
       elSalesTable.innerHTML = '<thead><tr><th class="muted">—</th></tr></thead><tbody><tr><td class="muted">Sales section disabled</td></tr></tbody>';
       return;
     }
 
-    var srcs = safeArray(allReport.sources);
+    var srcs = safeArray(R.sources);
     var totals = sales.totals || {};
     var bySource = sales.by_source || {};
 
@@ -339,10 +355,11 @@
   }
 
   function buildGoalsTable() {
-    if (!allReport) return;
     if (!elGoalsTable) return;
+    var R = getActiveReport();
+    if (!R) return;
 
-    var goals = allReport.goals || {};
+    var goals = R.goals || {};
     var excluded = safeArray(goals.excluded_events);
     var goalNames = safeArray(goals.goal_names).filter(function (g) { return !isExcludedGoal(g, excluded); });
 
@@ -351,7 +368,7 @@
       return;
     }
 
-    var srcs = safeArray(allReport.sources);
+    var srcs = safeArray(R.sources);
     var totalsThis = goals.totals_this || { sessions: 0, goals: {} };
     var totalsLast = goals.totals_last || { sessions: 0, goals: {} };
     var bySource = goals.by_source || {};
@@ -390,17 +407,12 @@
     destroyChart('visits_line');
     if (!window.Chart) return;
 
-    // Prefer report-local timeseries for segment views; otherwise use traffic/all/visits.
+    var R = getActiveReport();
     var ts = null;
     try {
-      if (isSegmentView && allReport && allReport.timeseries) {
-        ts = allReport.timeseries;
-      } else {
-        ts = data.sections && data.sections.traffic && data.sections.traffic.all && data.sections.traffic.all.visits
-          ? data.sections.traffic.all.visits.timeseries
-          : null;
-      }
-    } catch (e) {}
+      // New schema prefers report-local timeseries.
+      ts = (R && R.visits && R.visits.timeseries) ? R.visits.timeseries : (R && R.timeseries ? R.timeseries : null);
+    } catch (e) { ts = null; }
 
     if (!ts || !Array.isArray(ts.labels)) return;
     var canvas = document.getElementById('chart-visits-line');
@@ -461,8 +473,9 @@
   function renderPpcLineChart() {
     destroyChart('ppc_visits_line');
     if (!window.Chart) return;
-    if (!ppcReport || !ppcReport.visits || !ppcReport.visits.timeseries) return;
-    var ts = ppcReport.visits.timeseries;
+    var R = getActiveReport();
+    if (!R || !R.visits || !R.visits.timeseries) return;
+    var ts = R.visits.timeseries;
     if (!ts || !Array.isArray(ts.labels)) return;
     var canvas = document.getElementById('chart-ppc-visits-line');
     if (!canvas) return;
@@ -520,8 +533,9 @@
   }
 
   function ppcItems(path) {
-    if (!ppcReport) return [];
-    var obj = ppcReport[path];
+    var R = getActiveReport();
+    if (!R) return [];
+    var obj = R[path];
     if (!obj || !obj.items) return [];
     return safeArray(obj.items);
   }
@@ -731,7 +745,9 @@
 
   function buildPpcGoalsTable() {
     if (!elPpcGoalsTable) return;
-    var g = ppcReport && ppcReport.goals ? ppcReport.goals : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var g = R.goals ? R.goals : {};
     var excluded = safeArray(g.excluded_events || []);
     var items = safeArray(g.items || []).filter(function (it) {
       var name = it && it.goal != null ? String(it.goal) : '';
@@ -835,8 +851,9 @@
   }
 
   function renderDonuts() {
-    if (!allReport) return;
-    var d = allReport.demographics || {};
+    var R = getActiveReport();
+    if (!R) return;
+    var d = R.demographics || {};
     renderDoughnut('gender', d.gender);
     // Segment reports use the same "browsers" slot to display cities (optional).
     renderDoughnut('browsers', isSegmentView ? (d.cities || []) : d.browsers);
@@ -851,7 +868,9 @@
 
   function buildSeoGscTable() {
     if (!elSeoGscTable) return;
-    var gsc = seoReport && seoReport.gsc ? seoReport.gsc : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var gsc = R.gsc ? R.gsc : {};
 
     var thisRange = (ranges.this_start || '') + ' – ' + (ranges.this_end || '');
     var lastRange = (ranges.last_start || '') + ' – ' + (ranges.last_end || '');
@@ -894,7 +913,9 @@
 
   function buildSeoKeywordsTable() {
     if (!elSeoKeywordsTable) return;
-    var kw = seoReport && seoReport.keywords ? seoReport.keywords : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var kw = R.keywords ? R.keywords : {};
     var items = safeArray(kw.items);
 
     var headers = ['Raktažodis', 'Google pozicija', 'Pozicijos pokytis per laikotarpį', 'Domenas'];
@@ -931,7 +952,9 @@
 
   function buildSeoBehaviorTable() {
     if (!elSeoBehaviorTable) return;
-    var b = seoReport && seoReport.behavior ? seoReport.behavior : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var b = R.behavior ? R.behavior : {};
     var t = b.this || {};
     var l = b.last || {};
 
@@ -963,7 +986,9 @@
 
   function buildSeoSalesTable() {
     if (!elSeoSalesTable) return;
-    var s = seoReport && seoReport.sales ? seoReport.sales : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var s = R.sales ? R.sales : {};
     var t = s.this || {};
     var l = s.last || {};
 
@@ -1005,7 +1030,9 @@
 
   function buildSeoGoalsTable() {
     if (!elSeoGoalsTable) return;
-    var g = seoReport && seoReport.goals ? seoReport.goals : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var g = R.goals ? R.goals : {};
     var excluded = safeArray(g.excluded_events || []);
     var items = safeArray(g.items || []).filter(function (it) {
       var name = it && it.name != null ? String(it.name) : '';
@@ -1041,7 +1068,9 @@
   }
 
   function renderSeoCharts() {
-    var c = seoReport && seoReport.charts ? seoReport.charts : {};
+    var R = getActiveReport();
+    if (!R) return;
+    var c = R.charts ? R.charts : {};
     renderDoughnut('seo-devices', c.devices);
     renderDoughnut('seo-age', c.age);
     renderDoughnut('seo-gender', c.gender);
