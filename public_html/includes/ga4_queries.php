@@ -129,7 +129,7 @@ function ga4_try_channel_group_dimension(
     foreach ($dimCandidates as $dim) {
         $req = [
             'property' => $property,
-            'dateRanges' => $dateRanges,
+            'date_ranges' => $dateRanges,
             'dimensions' => [new Dimension(['name' => $dim])],
             'metrics' => $metrics,
             'limit' => 250,
@@ -160,8 +160,8 @@ function ga4_fetch_totals_all(
     $property = ga4_property_name($propertyId);
 
     $dateRanges = [
-        new DateRange(['startDate' => $thisStart, 'endDate' => $thisEnd]),
-        new DateRange(['startDate' => $lastStart, 'endDate' => $lastEnd]),
+        new DateRange(['start_date' => $thisStart, 'end_date' => $thisEnd]),
+        new DateRange(['start_date' => $lastStart, 'end_date' => $lastEnd]),
     ];
 
     $baseMetrics = [
@@ -179,7 +179,7 @@ function ga4_fetch_totals_all(
 
     $req = [
         'property' => $property,
-        'dateRanges' => $dateRanges,
+        'date_ranges' => $dateRanges,
         'metrics' => $baseMetrics,
     ];
     $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_all']);
@@ -263,8 +263,8 @@ function ga4_fetch_totals_by_channel_group(
     $property = ga4_property_name($propertyId);
 
     $dateRanges = [
-        new DateRange(['startDate' => $thisStart, 'endDate' => $thisEnd]),
-        new DateRange(['startDate' => $lastStart, 'endDate' => $lastEnd]),
+        new DateRange(['start_date' => $thisStart, 'end_date' => $thisEnd]),
+        new DateRange(['start_date' => $lastStart, 'end_date' => $lastEnd]),
     ];
 
     $metrics = [
@@ -362,7 +362,7 @@ function ga4_fetch_timeseries_all(
 
     $req = [
         'property' => $property,
-        'dateRanges' => [new DateRange(['startDate' => $startDate, 'endDate' => $endDate])],
+        'date_ranges' => [new DateRange(['start_date' => $startDate, 'end_date' => $endDate])],
         'dimensions' => [new Dimension(['name' => 'date'])],
         'metrics' => $metrics,
         'limit' => 10000,
@@ -421,7 +421,7 @@ function ga4_fetch_timeseries_by_channel_group(
 
     $req = [
         'property' => $property,
-        'dateRanges' => [new DateRange(['startDate' => $startDate, 'endDate' => $endDate])],
+        'date_ranges' => [new DateRange(['start_date' => $startDate, 'end_date' => $endDate])],
         'dimensions' => [
             new Dimension(['name' => 'date']),
             new Dimension(['name' => $channelGroupDimension]),
@@ -537,8 +537,8 @@ function ga4_fetch_totals_for_segment(
     $property = ga4_property_name($propertyId);
 
     $dateRanges = [
-        new DateRange(['startDate' => $thisStart, 'endDate' => $thisEnd]),
-        new DateRange(['startDate' => $lastStart, 'endDate' => $lastEnd]),
+        new DateRange(['start_date' => $thisStart, 'end_date' => $thisEnd]),
+        new DateRange(['start_date' => $lastStart, 'end_date' => $lastEnd]),
     ];
 
     $dimFilter = ga4_segment_dimension_filter($trafficKey, true);
@@ -557,9 +557,9 @@ function ga4_fetch_totals_for_segment(
 
     $req = [
         'property' => $property,
-        'dateRanges' => $dateRanges,
+        'date_ranges' => $dateRanges,
         'metrics' => $metrics,
-        'dimensionFilter' => $dimFilter,
+        'dimension_filter' => $dimFilter,
     ];
     $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_segment', 'trafficKey' => $trafficKey, 'filter' => 'channel_group']);
 
@@ -588,7 +588,7 @@ function ga4_fetch_totals_for_segment(
     // Retry #2: channel group filter fallback to sessionSourceMedium regex
     if (!$res['ok']) {
         $dimFilter = ga4_segment_dimension_filter($trafficKey, false);
-        $req['dimensionFilter'] = $dimFilter;
+        $req['dimension_filter'] = $dimFilter;
         $usedFilterFallback = true;
         $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_segment', 'trafficKey' => $trafficKey, 'filter' => 'source_medium']);
     }
@@ -675,10 +675,10 @@ function ga4_fetch_timeseries_for_segment(
     $dimFilter = ga4_segment_dimension_filter($trafficKey, true);
     $req = [
         'property' => $property,
-        'dateRanges' => [new DateRange(['startDate' => $startDate, 'endDate' => $endDate])],
+        'date_ranges' => [new DateRange(['start_date' => $startDate, 'end_date' => $endDate])],
         'dimensions' => [new Dimension(['name' => 'date'])],
         'metrics' => $metrics,
-        'dimensionFilter' => $dimFilter,
+        'dimension_filter' => $dimFilter,
         'limit' => 10000,
     ];
     $res = ga4_run_report_safe($client, $req, ['kind' => 'timeseries_segment', 'trafficKey' => $trafficKey, 'filter' => 'channel_group']);
@@ -686,7 +686,7 @@ function ga4_fetch_timeseries_for_segment(
     $usedFilterFallback = false;
     if (!$res['ok']) {
         $dimFilter = ga4_segment_dimension_filter($trafficKey, false);
-        $req['dimensionFilter'] = $dimFilter;
+        $req['dimension_filter'] = $dimFilter;
         $usedFilterFallback = true;
         $res = ga4_run_report_safe($client, $req, ['kind' => 'timeseries_segment', 'trafficKey' => $trafficKey, 'filter' => 'source_medium']);
     }
