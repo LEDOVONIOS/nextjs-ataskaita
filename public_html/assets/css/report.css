@@ -256,6 +256,95 @@
   color: rgba(232,238,252,.92);
 }
 
+/* Donut charts: smaller size + legend on the right (custom legend) */
+.donut-row{
+  display:flex;
+  align-items:stretch;
+  gap: 12px;
+}
+@media (max-width: 720px){
+  .donut-row{ flex-direction:column; }
+}
+
+.donut-canvas{
+  flex: 0 0 240px;
+  height: 240px;
+  max-height: 240px;
+  width: 240px;
+  max-width: 100%;
+  position: relative;
+}
+@media (max-width: 720px){
+  .donut-canvas{
+    width: 100%;
+    max-width: 260px;
+    margin: 0 auto;
+  }
+}
+
+.donut-canvas canvas{
+  display:block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Override the old "legend under chart" spacing when using new layout */
+.report3__donutLegend.donut-legend{
+  margin-top: 0;
+}
+
+.donut-legend{
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 6px; /* room for scrollbar */
+}
+
+.donut-legend-list{
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+}
+
+.donut-legend-item{
+  display:grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items:start;
+  padding: 4px 0;
+  font-size: 12px;
+  color: rgba(232,238,252,.86);
+}
+
+.donut-legend-label{
+  font-weight: 900;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.donut-legend-underline{
+  height: 4px;
+  width: 44px;
+  border-radius: 999px;
+  margin-top: 5px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.10);
+}
+
+.donut-legend-metrics{
+  display:flex;
+  align-items:baseline;
+  justify-content:flex-end;
+  gap: 6px;
+  white-space:nowrap;
+  font-weight: 900;
+  color: rgba(232,238,252,.92);
+}
+.donut-legend-pct{
+  font-weight: 700;
+}
+
 /* SEO report additions */
 .report3__textarea{
   width: 100%;

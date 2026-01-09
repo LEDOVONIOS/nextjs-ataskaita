@@ -947,6 +947,114 @@ document.addEventListener("DOMContentLoaded", () => {
       else appendPlaceholderToSection('bottom-charts', 'Missing donut container: ' + String(id));
       return;
     }
+
+    function fmtPctOneDecimal(p) {
+      if (p == null || (typeof p === 'number' && !isFinite(p))) return '—';
+      var num = Number(p);
+      if (!isFinite(num)) return '—';
+      // Keep one decimal (e.g. 12,0%) for consistent readability.
+      return num.toFixed(1).replace('.', ',') + '%';
+    }
+
+    function ensureDonutRowLayout(canvasEl, legendEl) {
+      // Keep report.php markup intact; only wrap/move nodes for layout.
+      try {
+        legendEl.classList.add('donut-legend');
+        canvasEl.classList.add('donut-chart-canvas');
+      } catch (e) {}
+
+      var existingRow = canvasEl.closest ? canvasEl.closest('.donut-row') : null;
+      if (existingRow && legendEl.closest && legendEl.closest('.donut-row') === existingRow) {
+        // Ensure the canvas is inside a donut-canvas container.
+        var existingCanvasWrap = canvasEl.closest('.donut-canvas');
+        if (!existingCanvasWrap) {
+          var wrap = document.createElement('div');
+          wrap.className = 'donut-canvas';
+          existingRow.insertBefore(wrap, canvasEl);
+          wrap.appendChild(canvasEl);
+        }
+        return;
+      }
+
+      var parent = canvasEl.parentNode;
+      if (!parent) return;
+
+      var row = document.createElement('div');
+      row.className = 'donut-row';
+
+      var canvasWrap2 = document.createElement('div');
+      canvasWrap2.className = 'donut-canvas';
+
+      // Insert row near original canvas position (usually before the legend).
+      if (legendEl.parentNode === parent) parent.insertBefore(row, legendEl);
+      else parent.appendChild(row);
+
+      row.appendChild(canvasWrap2);
+      canvasWrap2.appendChild(canvasEl);
+      row.appendChild(legendEl);
+
+      try {
+        legendEl.classList.add('donut-legend');
+      } catch (e2) {}
+    }
+
+    function renderDonutLegend(legendEl, rows, colors, total) {
+      // Custom legend on the right side (accessible, dark-theme-friendly).
+      while (legendEl.firstChild) legendEl.removeChild(legendEl.firstChild);
+
+      var list = document.createElement('div');
+      list.className = 'donut-legend-list';
+      list.setAttribute('role', 'list');
+      legendEl.appendChild(list);
+
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i] || {};
+        var v = Number(r.value || 0);
+        if (!isFinite(v) || v < 0) v = 0;
+        var p = (total > 0) ? (v / total * 100) : null;
+        var pctText = (p == null) ? '—' : fmtPctOneDecimal(p);
+
+        var item = document.createElement('div');
+        item.className = 'donut-legend-item';
+        item.setAttribute('role', 'listitem');
+
+        var left = document.createElement('div');
+        left.className = 'donut-legend-left';
+
+        var label = document.createElement('div');
+        label.className = 'donut-legend-label';
+        label.textContent = String(r.label != null ? r.label : '—');
+
+        var bar = document.createElement('div');
+        bar.className = 'donut-legend-underline';
+        bar.style.backgroundColor = colors[i] || 'rgba(255,255,255,.35)';
+
+        left.appendChild(label);
+        left.appendChild(bar);
+
+        var right = document.createElement('div');
+        right.className = 'donut-legend-metrics';
+
+        var valueSpan = document.createElement('span');
+        valueSpan.className = 'donut-legend-value';
+        valueSpan.textContent = fmtNumber(v, 0);
+
+        var pctSpan = document.createElement('span');
+        pctSpan.className = 'donut-legend-pct muted';
+        pctSpan.textContent = ' (' + pctText + ')';
+
+        right.appendChild(valueSpan);
+        right.appendChild(pctSpan);
+
+        item.appendChild(left);
+        item.appendChild(right);
+        list.appendChild(item);
+      }
+    }
+
+    // Ensure DOM structure matches the new layout contract.
+    ensureDonutRowLayout(canvas, legend);
+
     var ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -980,6 +1088,7 @@ document.addEventListener("DOMContentLoaded", () => {
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -987,27 +1096,17 @@ document.addEventListener("DOMContentLoaded", () => {
               label: function (context) {
                 var v = Number(context.parsed || 0);
                 var p = (total > 0) ? (v / total * 100) : null;
-                var pctText = (p == null) ? '—' : fmtPctNumber(p);
+                var pctText = (p == null) ? '—' : fmtPctOneDecimal(p);
                 return String(context.label || '') + ': ' + fmtNumber(v, 0) + ' (' + pctText + ')';
               }
             }
           }
         },
-        cutout: '62%'
+        cutout: '70%'
       }
     });
 
-    legend.innerHTML = rows.map(function (r, idx) {
-      var v = r.value;
-      var p = (total > 0) ? (v / total * 100) : null;
-      var pctText = (p == null) ? '—' : fmtPctNumber(p);
-      return '' +
-        '<div class="report3__legendItem">' +
-          '<span class="report3__legendSwatch" style="background:' + esc(colors[idx]) + '"></span>' +
-          '<span class="report3__legendLabel">' + esc(r.label) + '</span>' +
-          '<span class="report3__legendValue">' + esc(fmtNumber(v, 0)) + ' <span class="muted">(' + esc(pctText) + ')</span></span>' +
-        '</div>';
-    }).join('');
+    renderDonutLegend(legend, rows, colors, total);
   }
 
   function renderDonuts() {
