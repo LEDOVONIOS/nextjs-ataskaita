@@ -1102,13 +1102,19 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             $visitsBySourceOverride = null;
             $sourcesOverride = null;
 
-            if (($k === 'ppc' || $k === 'referral') && ($ga4ClientForBreakdowns instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient) && $ga4PropertyId !== '' && ga4_is_valid_property_id($ga4PropertyId)) {
-                $filter = ga4_segment_dimension_filter($k, true, 'sessionDefaultChannelGroup');
+ if (
+                ($k === 'seo' || $k === 'ppc' || $k === 'social_organic' || $k === 'social_paid' || $k === 'referral' || $k === 'email')
+                && ($ga4ClientForBreakdowns instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient)
+                && $ga4PropertyId !== ''
+                && ga4_is_valid_property_id($ga4PropertyId)
+            ) {
+                // Phase 4.1: channel segments MUST NOT fall back to "all" or placeholders.
+                // If GA4 returns 0 rows, by_source is an empty array (valid "no data" state).                $filter = ga4_segment_dimension_filter($k, true, 'sessionDefaultChannelGroup');
                 $metrics = ['totalUsers', 'newUsers', 'sessions'];
                 $limit = 15;
-                $dimCandidates = ($k === 'ppc')
-                    ? ['sessionCampaignName', 'sessionSourceMedium']
-                    : ['sessionSource', 'sessionSourceMedium'];
+               // Phase 4.1 scope: PPC/Referral by_source must use sessionSource (no sessionCampaignName).
+                $dimCandidates = ['sessionSource'];
+
 
                 $thisRows = null;
                 $lastRows = null;
@@ -1208,19 +1214,19 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                     $visitsBySourceOverride = $rows;
                     $sourcesOverride = array_map(static fn($r) => ['key' => (string)($r['key'] ?? ''), 'label' => (string)($r['label'] ?? '')], $rows);
 
+ $channelName = ga4_segment_channel_group_name($k);
                     log_info('GA4 segment breakdown', [
                         'key' => $k,
                         'dimension' => $usedDim,
-                        'filter' => 'sessionDefaultChannelGroup == "' . ($k === 'ppc' ? 'Paid Search' : 'Referral') . '"',
                         'rows_this' => is_array($thisRows) ? count($thisRows) : 0,
                         'rows_last' => is_array($lastRows) ? count($lastRows) : 0,
                     ]);
                 } else {
                     $reportStatus = 'PARTIAL';
                     $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 breakdown failed for ' . $k];
+                                        $channelName = ga4_segment_channel_group_name($k);
                     log_error('GA4 breakdown failed', [
                         'key' => $k,
-                        'filter' => 'sessionDefaultChannelGroup == "' . ($k === 'ppc' ? 'Paid Search' : 'Referral') . '"',
                         'error' => $lastError,
                     ]);
                     // Still remove placeholders: empty list is a valid "no data" state for by_source.
@@ -1253,9 +1259,10 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             $byCount = is_array($traffic[$k]['visits']['by_source'] ?? null) ? count((array)$traffic[$k]['visits']['by_source']) : 0;
             log_info('GA4 segment built', [
                 'key' => $k,
-                'filter' => $k === 'ppc'
-                    ? 'sessionDefaultChannelGroup == "Paid Search"'
-                    : ($k === 'referral' ? 'sessionDefaultChannelGroup == "Referral"' : ($k === 'seo' ? 'sessionDefaultChannelGroup == "Organic Search"' : null)),
+               'filter' => (static function (string $tk): ?string {
+                    $name = ga4_segment_channel_group_name($tk);
+                    return $name ? ('sessionDefaultChannelGroup == "' . $name . '"') : null;
+                })($k),
                 'users_this' => $usersThisTotal,
                 'users_last' => $usersLastTotal,
                 'new_users_this' => $newThisTotal,
@@ -1266,9 +1273,6 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 'timeseries_points' => count($labels),
             ]);
 
-            if ($k !== 'all' && isset($ga4TotalsThisByKey['all']) && is_array($ga4TotalsThisByKey['all']) && $tThis === (array)$ga4TotalsThisByKey['all']) {
-                log_warn('segment fallback to all', ['key' => $k]);
-            }
         } else {
             $reportStatus = 'PARTIAL';
             $traffic[$k] = $buildTrafficSegmentEmpty($k, $labels, $includeSales);
@@ -2672,4 +2676,3 @@ function upsert_monthly_report_json(PDO $pdo, int $projectId, int $year, int $mo
         ':json2' => $json,
     ]);
 }
-
