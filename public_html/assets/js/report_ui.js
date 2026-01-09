@@ -2,58 +2,69 @@
 (function () {
   'use strict';
 
-  var data = window.REPORT_DATA || {};
-  var meta = data.meta || {};
-  var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
-  var project = data.project || {};
-  var showSales = !!project.show_sales_section;
-  var activeView = (meta && meta.active_view) ? String(meta.active_view) : '';
+  function onReady(fn) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', fn);
+    } else {
+      fn();
+    }
+  }
 
-  // Determine active report key based on current view (sidebar selection / route).
-  // Schema: window.REPORT_DATA.sections.<reportKey>.<section>
-  (function deriveActiveReportKey() {
-    var view = activeView;
-    if (!view) {
-      try {
-        view = String((new URLSearchParams(window.location.search)).get('view') || '');
-      } catch (e) {
-        view = '';
+  onReady(function initReportUI() {
+    // STEP 1 — Confirm JS loads & runs
+    // eslint-disable-next-line no-console
+    console.log('report_ui.js loaded', window.REPORT_DATA?.sections && Object.keys(window.REPORT_DATA.sections));
+
+    var data = window.REPORT_DATA || {};
+    var meta = data.meta || {};
+    var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
+    var project = data.project || {};
+    var showSales = !!project.show_sales_section;
+    var charts = Object.create(null);
+
+    // Prefer explicit wiring from report.php (STEP 3).
+    // If missing, derive a reasonable default based on view.
+    (function ensureActiveReportKey() {
+      if (window.ACTIVE_REPORT_KEY) return;
+      var view = (meta && meta.active_view) ? String(meta.active_view) : '';
+      if (!view) {
+        try {
+          view = String((new URLSearchParams(window.location.search)).get('view') || '');
+        } catch (e) {
+          view = '';
+        }
       }
-    }
+      var key = 'all_visitors_report';
+      if (view === 'seo') key = 'seo_report';
+      else if (view === 'ppc') key = 'ppc_report';
+      else if (view && view !== 'all') {
+        var secs = (data && data.sections) ? data.sections : {};
+        if (secs && secs[view]) key = view;
+        else if (secs && secs[view + '_report']) key = view + '_report';
+        else key = view;
+      }
+      window.ACTIVE_REPORT_KEY = key;
+    })();
 
-    var key = 'all_visitors_report';
-    if (view === 'seo') key = 'seo_report';
-    else if (view === 'ppc') key = 'ppc_report';
-    else if (view && view !== 'all') {
-      // Segment reports: use their keys accordingly (prefer existing section keys).
-      var secs = (data && data.sections) ? data.sections : {};
-      if (secs && secs[view]) key = view;
-      else if (secs && secs[view + '_report']) key = view + '_report';
-      else key = view;
-    }
+    var isSegmentView = !!(window.ACTIVE_REPORT_KEY && window.ACTIVE_REPORT_KEY !== 'all_visitors_report' && window.ACTIVE_REPORT_KEY !== 'seo_report' && window.ACTIVE_REPORT_KEY !== 'ppc_report');
 
-    window.ACTIVE_REPORT_KEY = key;
-  })();
-
-  var isSegmentView = !!(window.ACTIVE_REPORT_KEY && window.ACTIVE_REPORT_KEY !== 'all_visitors_report' && window.ACTIVE_REPORT_KEY !== 'seo_report' && window.ACTIVE_REPORT_KEY !== 'ppc_report');
-  var charts = Object.create(null);
-
-  var elVisitsTable = document.getElementById('table-visits');
-  var elBehaviorTable = document.getElementById('table-behavior');
-  var elSalesTable = document.getElementById('table-sales');
-  var elGoalsTable = document.getElementById('table-goals');
-  var elSeoGscTable = document.getElementById('table-seo-gsc');
-  var elSeoKeywordsTable = document.getElementById('table-seo-keywords');
-  var elSeoBehaviorTable = document.getElementById('table-seo-behavior');
-  var elSeoSalesTable = document.getElementById('table-seo-sales');
-  var elSeoGoalsTable = document.getElementById('table-seo-goals');
-  var elPpcVisitsTable = document.getElementById('table-ppc-visits');
-  var elPpcCampaignsTable = document.getElementById('table-ppc-campaigns');
-  var elPpcKeywordsTable = document.getElementById('table-ppc-keywords');
-  var elPpcCitiesTable = document.getElementById('table-ppc-cities');
-  var elPpcBehaviorTable = document.getElementById('table-ppc-behavior');
-  var elPpcSalesTable = document.getElementById('table-ppc-sales');
-  var elPpcGoalsTable = document.getElementById('table-ppc-goals');
+    // STEP 2 — Fix DOM selector mismatch (match report.php markup)
+    var elVisitsTable = document.getElementById('table-visits');
+    var elBehaviorTable = document.getElementById('table-behavior');
+    var elSalesTable = document.getElementById('table-sales');
+    var elGoalsTable = document.getElementById('table-goals');
+    var elSeoGscTable = document.getElementById('table-seo-gsc');
+    var elSeoKeywordsTable = document.getElementById('table-seo-keywords');
+    var elSeoBehaviorTable = document.getElementById('table-seo-behavior');
+    var elSeoSalesTable = document.getElementById('table-seo-sales');
+    var elSeoGoalsTable = document.getElementById('table-seo-goals');
+    var elPpcVisitsTable = document.getElementById('table-ppc-visits');
+    var elPpcCampaignsTable = document.getElementById('table-ppc-campaigns');
+    var elPpcKeywordsTable = document.getElementById('table-ppc-keywords');
+    var elPpcCitiesTable = document.getElementById('table-ppc-cities');
+    var elPpcBehaviorTable = document.getElementById('table-ppc-behavior');
+    var elPpcSalesTable = document.getElementById('table-ppc-sales');
+    var elPpcGoalsTable = document.getElementById('table-ppc-goals');
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -134,10 +145,35 @@
     return Array.isArray(v) ? v : [];
   }
 
+  function appendPlaceholderToSection(sectionId, message) {
+    var sec = sectionId ? document.getElementById(sectionId) : null;
+    if (!sec) return;
+    // Avoid duplicating placeholders.
+    if (sec.querySelector && sec.querySelector('[data-report-ui-placeholder="1"]')) return;
+    var el = document.createElement('div');
+    el.setAttribute('data-report-ui-placeholder', '1');
+    el.className = 'muted';
+    el.style.padding = '8px 0';
+    el.textContent = String(message || 'UI placeholder');
+    sec.appendChild(el);
+  }
+
+  var didLogMissingChartJs = false;
+  function ensureChartJsOrWarn() {
+    if (window.Chart) return true;
+    if (!didLogMissingChartJs) {
+      didLogMissingChartJs = true;
+      // eslint-disable-next-line no-console
+      console.error('[report_ui] Chart.js is not available (Chart is undefined). Charts will be skipped; tables should still render.');
+    }
+    return false;
+  }
+
   var didWarnMissingActiveReport = false;
   function getActiveReport() {
     var root = window.REPORT_DATA || {};
     var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
+    // STEP 3 — Active report key wiring
     var out = (root.sections && root.sections[key]) ? root.sections[key] : null;
     if (!out && !didWarnMissingActiveReport) {
       didWarnMissingActiveReport = true;
@@ -173,9 +209,15 @@
   }
 
   function buildVisitsTable() {
-    if (!elVisitsTable) return;
+    if (!elVisitsTable) {
+      appendPlaceholderToSection('visits', 'Missing container: #table-visits');
+      return;
+    }
     var R = getActiveReport();
-    if (!R) return;
+    if (!R) {
+      appendPlaceholderToSection('visits', 'Missing report data for active key: ' + String(window.ACTIVE_REPORT_KEY || 'all_visitors_report'));
+      return;
+    }
 
     var srcs = safeArray(R.sources);
     var totals = (R.visits && R.visits.totals) ? R.visits.totals : {};
@@ -225,9 +267,15 @@
   }
 
   function buildBehaviorTable() {
-    if (!elBehaviorTable) return;
+    if (!elBehaviorTable) {
+      appendPlaceholderToSection('behavior', 'Missing container: #table-behavior');
+      return;
+    }
     var R = getActiveReport();
-    if (!R) return;
+    if (!R) {
+      appendPlaceholderToSection('behavior', 'Missing report data for active key: ' + String(window.ACTIVE_REPORT_KEY || 'all_visitors_report'));
+      return;
+    }
 
     var srcs = safeArray(R.sources);
     var totals = (R.behavior && R.behavior.totals) ? R.behavior.totals : {};
@@ -278,9 +326,15 @@
 
   function buildSalesTable() {
     if (!showSales) return;
-    if (!elSalesTable) return;
+    if (!elSalesTable) {
+      appendPlaceholderToSection('sales', 'Missing container: #table-sales');
+      return;
+    }
     var R = getActiveReport();
-    if (!R) return;
+    if (!R) {
+      appendPlaceholderToSection('sales', 'Missing report data for active key: ' + String(window.ACTIVE_REPORT_KEY || 'all_visitors_report'));
+      return;
+    }
 
     var sales = R.sales || {};
     if (!sales.enabled) {
@@ -355,9 +409,15 @@
   }
 
   function buildGoalsTable() {
-    if (!elGoalsTable) return;
+    if (!elGoalsTable) {
+      appendPlaceholderToSection('goals', 'Missing container: #table-goals');
+      return;
+    }
     var R = getActiveReport();
-    if (!R) return;
+    if (!R) {
+      appendPlaceholderToSection('goals', 'Missing report data for active key: ' + String(window.ACTIVE_REPORT_KEY || 'all_visitors_report'));
+      return;
+    }
 
     var goals = R.goals || {};
     var excluded = safeArray(goals.excluded_events);
@@ -405,7 +465,10 @@
 
   function renderLineChart() {
     destroyChart('visits_line');
-    if (!window.Chart) return;
+    if (!ensureChartJsOrWarn()) {
+      appendPlaceholderToSection('visits', 'Chart is unavailable (Chart.js not loaded).');
+      return;
+    }
 
     var R = getActiveReport();
     var ts = null;
@@ -416,7 +479,10 @@
 
     if (!ts || !Array.isArray(ts.labels)) return;
     var canvas = document.getElementById('chart-visits-line');
-    if (!canvas) return;
+    if (!canvas) {
+      appendPlaceholderToSection('visits', 'Missing canvas: #chart-visits-line');
+      return;
+    }
     var ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -472,13 +538,19 @@
 
   function renderPpcLineChart() {
     destroyChart('ppc_visits_line');
-    if (!window.Chart) return;
+    if (!ensureChartJsOrWarn()) {
+      appendPlaceholderToSection('ppc-visits', 'Chart is unavailable (Chart.js not loaded).');
+      return;
+    }
     var R = getActiveReport();
     if (!R || !R.visits || !R.visits.timeseries) return;
     var ts = R.visits.timeseries;
     if (!ts || !Array.isArray(ts.labels)) return;
     var canvas = document.getElementById('chart-ppc-visits-line');
-    if (!canvas) return;
+    if (!canvas) {
+      appendPlaceholderToSection('ppc-visits', 'Missing canvas: #chart-ppc-visits-line');
+      return;
+    }
     var ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -782,11 +854,16 @@
 
   function renderDoughnut(id, items) {
     destroyChart(id);
-    if (!window.Chart) return;
+    if (!ensureChartJsOrWarn()) return;
 
     var canvas = document.getElementById('chart-donut-' + id);
     var legend = document.getElementById('legend-donut-' + id);
-    if (!canvas || !legend) return;
+    if (!canvas || !legend) {
+      // Best-effort placeholder in the closest known section.
+      if (String(id || '').indexOf('seo-') === 0) appendPlaceholderToSection('seo-charts', 'Missing donut container: ' + String(id));
+      else appendPlaceholderToSection('bottom-charts', 'Missing donut container: ' + String(id));
+      return;
+    }
     var ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -867,7 +944,10 @@
   }
 
   function buildSeoGscTable() {
-    if (!elSeoGscTable) return;
+    if (!elSeoGscTable) {
+      appendPlaceholderToSection('seo-gsc', 'Missing container: #table-seo-gsc');
+      return;
+    }
     var R = getActiveReport();
     if (!R) return;
     var gsc = R.gsc ? R.gsc : {};
@@ -912,7 +992,10 @@
   }
 
   function buildSeoKeywordsTable() {
-    if (!elSeoKeywordsTable) return;
+    if (!elSeoKeywordsTable) {
+      appendPlaceholderToSection('seo-keywords', 'Missing container: #table-seo-keywords');
+      return;
+    }
     var R = getActiveReport();
     if (!R) return;
     var kw = R.keywords ? R.keywords : {};
@@ -951,7 +1034,10 @@
   }
 
   function buildSeoBehaviorTable() {
-    if (!elSeoBehaviorTable) return;
+    if (!elSeoBehaviorTable) {
+      appendPlaceholderToSection('seo-behavior', 'Missing container: #table-seo-behavior');
+      return;
+    }
     var R = getActiveReport();
     if (!R) return;
     var b = R.behavior ? R.behavior : {};
@@ -985,7 +1071,10 @@
   }
 
   function buildSeoSalesTable() {
-    if (!elSeoSalesTable) return;
+    if (!elSeoSalesTable) {
+      appendPlaceholderToSection('seo-sales', 'Missing container: #table-seo-sales');
+      return;
+    }
     var R = getActiveReport();
     if (!R) return;
     var s = R.sales ? R.sales : {};
@@ -1029,7 +1118,10 @@
   }
 
   function buildSeoGoalsTable() {
-    if (!elSeoGoalsTable) return;
+    if (!elSeoGoalsTable) {
+      appendPlaceholderToSection('seo-goals', 'Missing container: #table-seo-goals');
+      return;
+    }
     var R = getActiveReport();
     if (!R) return;
     var g = R.goals ? R.goals : {};
@@ -1141,5 +1233,6 @@
   if (window.location.hash) {
     setTimeout(function () { scrollToHash(window.location.hash); }, 50);
   }
+  }); // DOMContentLoaded init
 })();
 
