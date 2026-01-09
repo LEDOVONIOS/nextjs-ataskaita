@@ -99,15 +99,80 @@ function ga4_run_report_request_from_array(array $request): RunReportRequest
     if (array_key_exists('property', $request)) {
         $req->setProperty((string)$request['property']);
     }
+
     if (isset($request['date_ranges']) && is_array($request['date_ranges'])) {
-        $req->setDateRanges($request['date_ranges']);
+        $dateRanges = [];
+        foreach ($request['date_ranges'] as $dr) {
+            if ($dr instanceof DateRange) {
+                $dateRanges[] = $dr;
+                continue;
+            }
+            if (is_array($dr)) {
+                $start = $dr['start_date'] ?? $dr['startDate'] ?? null;
+                $end = $dr['end_date'] ?? $dr['endDate'] ?? null;
+                $o = new DateRange();
+                if ($start !== null) {
+                    $o->setStartDate((string)$start);
+                }
+                if ($end !== null) {
+                    $o->setEndDate((string)$end);
+                }
+                $dateRanges[] = $o;
+            }
+        }
+        if ($dateRanges) {
+            $req->setDateRanges($dateRanges);
+        }
     }
+
     if (isset($request['dimensions']) && is_array($request['dimensions'])) {
-        $req->setDimensions($request['dimensions']);
+        $dimensions = [];
+        foreach ($request['dimensions'] as $d) {
+            if ($d instanceof Dimension) {
+                $dimensions[] = $d;
+                continue;
+            }
+            if (is_string($d)) {
+                $o = new Dimension();
+                $o->setName($d);
+                $dimensions[] = $o;
+                continue;
+            }
+            if (is_array($d) && isset($d['name'])) {
+                $o = new Dimension();
+                $o->setName((string)$d['name']);
+                $dimensions[] = $o;
+            }
+        }
+        if ($dimensions) {
+            $req->setDimensions($dimensions);
+        }
     }
+
     if (isset($request['metrics']) && is_array($request['metrics'])) {
-        $req->setMetrics($request['metrics']);
+        $metrics = [];
+        foreach ($request['metrics'] as $m) {
+            if ($m instanceof Metric) {
+                $metrics[] = $m;
+                continue;
+            }
+            if (is_string($m)) {
+                $o = new Metric();
+                $o->setName($m);
+                $metrics[] = $o;
+                continue;
+            }
+            if (is_array($m) && isset($m['name'])) {
+                $o = new Metric();
+                $o->setName((string)$m['name']);
+                $metrics[] = $o;
+            }
+        }
+        if ($metrics) {
+            $req->setMetrics($metrics);
+        }
     }
+
     if (isset($request['dimension_filter']) && $request['dimension_filter'] instanceof FilterExpression) {
         $req->setDimensionFilter($request['dimension_filter']);
     }
