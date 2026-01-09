@@ -21,7 +21,7 @@ function ga4_build_client(): array
     if (!is_file($autoload)) {
         $cached = [
             'ok' => false,
-            'error' => 'Composer autoload not found at ' . $autoload,
+            'error' => 'Missing Composer autoload at ' . $autoload,
         ];
         log_error('GA4 client init failed: missing vendor autoload', ['autoload' => $autoload]);
         return $cached;

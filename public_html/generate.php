@@ -13,6 +13,10 @@ require_once __DIR__ . '/includes/layout.php';
 require_admin();
 $pdo = db();
 
+// GA4 diagnostics: Composer vendor autoload is required for GA4 Data API client.
+$ga4VendorAutoload = __DIR__ . '/vendor/autoload.php';
+$ga4VendorMissing = !is_file($ga4VendorAutoload);
+
 [$defaultYear, $defaultMonth] = current_year_month();
 $projectId = safe_int($_GET['project_id'] ?? ($_POST['project_id'] ?? 0), 0);
 $year = safe_int($_GET['year'] ?? ($_POST['year'] ?? $defaultYear), $defaultYear);
@@ -163,6 +167,12 @@ $projects = $pdo->query('SELECT id, name FROM projects ORDER BY name ASC')->fetc
 
 render_header('Generate Report');
 ?>
+
+<?php if ($ga4VendorMissing): ?>
+  <div class="alert alert--warn">
+    GA4 disabled: missing /vendor/autoload.php. Upload vendor/ (composer install) to enable GA4.
+  </div>
+<?php endif; ?>
 
 <div class="card">
   <form method="post" action="<?php echo e(url('/generate.php')); ?>">
