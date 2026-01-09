@@ -873,6 +873,16 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         }
     }
 
+    if (is_array($ga4ClientRes) && !($ga4ClientRes['ok'] ?? false)) {
+        $reportStatus = 'PARTIAL';
+        $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 disabled: client init failed'];
+        log_error('GA4 disabled: client init failed', [
+            'project_id' => $projectId,
+            'ga4_property_id' => $ga4PropertyId,
+            'error' => (string)($ga4ClientRes['error'] ?? 'unknown'),
+        ]);
+    }
+
     if (is_array($ga4ClientRes) && ($ga4ClientRes['ok'] ?? false) && ($ga4ClientRes['client'] ?? null) instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient) {
         /** @var \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient $ga4Client */
         $ga4Client = $ga4ClientRes['client'];
