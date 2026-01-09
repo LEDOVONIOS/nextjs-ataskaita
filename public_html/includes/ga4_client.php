@@ -135,6 +135,19 @@ function ga4_build_client(array $context = []): array
             'scopes' => $scopes,
         ]);
 
+        // Strict private_key integrity check (never log the key; only booleans).
+        $privateKey = (isset($creds['private_key']) && is_string($creds['private_key'])) ? $creds['private_key'] : '';
+        $privateKeyHasPemMarkers = ($privateKey !== '')
+            && (strpos($privateKey, '-----BEGIN PRIVATE KEY-----') !== false)
+            && (strpos($privateKey, '-----END PRIVATE KEY-----') !== false);
+        $privateKeyHasRealNewlines = ($privateKey !== '') && (strpos($privateKey, "\n") !== false);
+        $privateKeyHasEscapedNewlines = ($privateKey !== '') && (strpos($privateKey, "\\n") !== false);
+        log_info('GA4 client build: private_key integrity', [
+            'private_key_has_pem_markers' => $privateKeyHasPemMarkers,
+            'private_key_has_real_newlines' => $privateKeyHasRealNewlines,
+            'private_key_has_escaped_newlines' => $privateKeyHasEscapedNewlines,
+        ]);
+
         $missingFields = [];
         if ($jsonType === '') {
             $missingFields[] = 'type';
@@ -161,6 +174,29 @@ function ga4_build_client(array $context = []): array
             return $cached;
         }
 
+        // Fail fast if private_key is clearly malformed (avoid GA4 calls).
+        if (!$privateKeyHasPemMarkers) {
+            $cached = ['ok' => false, 'error' => 'Service account private_key is not PEM formatted'];
+            log_error('GA4 client init failed: invalid private_key format (pem_markers_missing)', [
+                'private_key_has_pem_markers' => $privateKeyHasPemMarkers,
+                'private_key_has_real_newlines' => $privateKeyHasRealNewlines,
+                'private_key_has_escaped_newlines' => $privateKeyHasEscapedNewlines,
+            ]);
+            return $cached;
+        }
+        if (!$privateKeyHasRealNewlines && !$privateKeyHasEscapedNewlines) {
+            $cached = ['ok' => false, 'error' => 'Service account private_key is not PEM formatted (missing newlines)'];
+            log_error('GA4 client init failed: invalid private_key format (no_newlines)', [
+                'private_key_has_pem_markers' => $privateKeyHasPemMarkers,
+                'private_key_has_real_newlines' => $privateKeyHasRealNewlines,
+                'private_key_has_escaped_newlines' => $privateKeyHasEscapedNewlines,
+            ]);
+            return $cached;
+        }
+
+        $normalizationPossible = ($privateKeyHasEscapedNewlines && !$privateKeyHasRealNewlines);
+        $normalized = false;
+
         // Build a credentials *object* (decoded array may be ignored by some versions).
         $sa = new \Google\Auth\Credentials\ServiceAccountCredentials($scopes, $creds);
 
@@ -173,12 +209,42 @@ function ga4_build_client(array $context = []): array
             }
             $token = $sa->fetchAuthToken($httpHandler);
         } catch (Throwable $e) {
+            // One retry if the private_key looks like it has escaped newlines (\\n) instead of real newlines.
+            if ($normalizationPossible && !$normalized) {
+                $creds['private_key'] = str_replace("\\n", "\n", (string)$creds['private_key']);
+                $normalized = true;
+
+                $privateKey2 = (isset($creds['private_key']) && is_string($creds['private_key'])) ? $creds['private_key'] : '';
+                $hasRealNewlines2 = ($privateKey2 !== '') && (strpos($privateKey2, "\n") !== false);
+                if (!$hasRealNewlines2) {
+                    $cached = ['ok' => false, 'error' => 'Service account private_key is not PEM formatted (newline normalization failed)'];
+                    log_error('GA4 client init failed: invalid private_key format (normalization_failed)', [
+                        'private_key_has_pem_markers' => $privateKeyHasPemMarkers,
+                        'private_key_has_real_newlines' => $hasRealNewlines2,
+                        'private_key_has_escaped_newlines' => $privateKeyHasEscapedNewlines,
+                    ]);
+                    return $cached;
+                }
+
+                $sa = new \Google\Auth\Credentials\ServiceAccountCredentials($scopes, $creds);
+                try {
+                    $token = $sa->fetchAuthToken($httpHandler);
+                } catch (Throwable $e2) {
+                    $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed'];
+                    log_error('GA4 client init failed: token preflight exception', [
+                        'keyPath' => $keyPath,
+                        'error' => $e2->getMessage(),
+                    ]);
+                    return $cached;
+                }
+            } else {
             $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed'];
             log_error('GA4 client init failed: token preflight exception', [
                 'keyPath' => $keyPath,
                 'error' => $e->getMessage(),
             ]);
             return $cached;
+            }
         }
 
         $accessToken = (is_array($token) && isset($token['access_token']) && is_string($token['access_token']))
