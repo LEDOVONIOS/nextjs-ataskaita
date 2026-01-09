@@ -763,6 +763,14 @@ $reportData = normalize_report_contract($snapshot, $row);
 $reportData = report_ensure_ui_contract($reportData);
 $showSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
 
+$reportNotes = [];
+foreach (['all_visitors', 'seo', 'ppc', 'social_organic', 'social_paid', 'referral', 'email'] as $scope) {
+    $note = get_report_note($projectId, $year, $month, (string)$scope);
+    if ($note !== null) {
+        $reportNotes[(string)$scope] = (string)$note;
+    }
+}
+
 $segmentViews = [
     'organic_social' => [
         'segment_key' => 'Organic Social',
@@ -837,6 +845,7 @@ if ($role === 'ADMIN') {
       <span class="muted">Laikotarpis:</span> <?php echo e($thisRange); ?>
       <span class="muted">· Palyginimas:</span> <?php echo e($lastRange); ?>
     </div>
+    <div class="muted" id="reportReadyState" aria-live="polite"></div>
   </div>
 
   <div class="report3__layout">
@@ -911,25 +920,14 @@ if ($role === 'ADMIN') {
               <div class="report3__sectionRange"><?php echo e($thisRange); ?></div>
             </div>
             <div class="report3__tableTitle">Atlikti mokamos reklamos darbai / komentarai</div>
-            <?php
-              $ppcSec = is_array($reportData['sections']['ppc_report'] ?? null) ? (array)$reportData['sections']['ppc_report'] : [];
-              $ppcWork = (string)($ppcSec['work_summary'] ?? '');
-              $ppcWorkTrim = trim($ppcWork);
-            ?>
-            <?php if ($role === 'ADMIN'): ?>
-              <form method="post" action="<?php echo e(url('/report.php')) . '?id=' . e((string)$ridForLinks) . '&view=ppc'; ?>">
-                <?php echo csrf_input(); ?>
-                <input type="hidden" name="action" value="save_ppc_work_summary">
-                <div class="form-row">
-                  <textarea class="report3__textarea" id="ppc_work_summary" name="ppc_work_summary" rows="8" placeholder="Įveskite atliktus mokamos reklamos darbus / komentarus..."><?php echo e($ppcWork); ?></textarea>
-                </div>
-                <div class="card__actions">
-                  <button class="btn btn--primary" type="submit">Išsaugoti</button>
-                </div>
-              </form>
-            <?php else: ?>
-              <div class="report3__notesRead" id="ppc_work_summary_read"><?php echo $ppcWorkTrim !== '' ? nl2br(e($ppcWorkTrim)) : '<span class="muted">—</span>'; ?></div>
-            <?php endif; ?>
+            <div class="form-row" id="ppc_note_editor">
+              <textarea class="report3__textarea" id="ppc_work_summary" rows="8" placeholder="Įveskite atliktus mokamos reklamos darbus / komentarus..."></textarea>
+            </div>
+            <div class="card__actions" id="ppc_note_actions">
+              <button class="btn btn--primary" type="button" id="btn-ppc-work-save">Išsaugoti</button>
+              <span class="muted report3__inlineNote" id="ppc-work-save-status" aria-live="polite"></span>
+            </div>
+            <div class="report3__notesRead" id="ppc_work_summary_read" style="display:none"></div>
 
             <div class="report3__notice">
               Svarbu: pateikiami duomenys gali būti dalinai netikslūs dėl
@@ -1399,12 +1397,17 @@ window.REPORT_DATA = <?php echo json_encode(
     $reportData,
     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
 ); ?>;
+window.REPORT_NOTES = <?php echo json_encode(
+    $reportNotes,
+    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+); ?>;
 // Compatibility alias (case-sensitive globals):
 // - Some UI builds read window.REPORT_DATA, others read window.Report_DATA.
 // Ensure both point to the same object.
 if (window.REPORT_DATA && !window.Report_DATA) window.Report_DATA = window.REPORT_DATA;
 if (window.Report_DATA && !window.REPORT_DATA) window.REPORT_DATA = window.Report_DATA;
 window.CSRF_TOKEN = <?php echo json_encode(csrf_token(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+window.CURRENT_USER_ROLE = <?php echo json_encode($role, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 </script>
 <script src="/assets/js/report_ui.js?v=<?= (int)@filemtime(__DIR__ . '/assets/js/report_ui.js') ?>"></script>
 

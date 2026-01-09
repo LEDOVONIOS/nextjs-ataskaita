@@ -56,3 +56,30 @@ function month_name(int $month): string
     return $names[$month] ?? 'Unknown';
 }
 
+/**
+ * Phase 3.5 — scoped report notes stored outside report snapshots.
+ * Returns NULL if no row exists for given scope.
+ */
+function get_report_note(int $project_id, int $year, int $month, string $scope): ?string
+{
+    if ($project_id <= 0 || $year < 2000 || $year > 2100 || $month < 1 || $month > 12 || trim($scope) === '') {
+        return null;
+    }
+    if (!function_exists('db')) {
+        return null;
+    }
+    $pdo = db();
+    $stmt = $pdo->prepare('
+        SELECT content
+        FROM notes
+        WHERE project_id = ? AND year = ? AND month = ? AND scope = ?
+        LIMIT 1
+    ');
+    $stmt->execute([$project_id, $year, $month, $scope]);
+    $val = $stmt->fetchColumn();
+    if ($val === false) {
+        return null;
+    }
+    return is_string($val) ? $val : '';
+}
+
