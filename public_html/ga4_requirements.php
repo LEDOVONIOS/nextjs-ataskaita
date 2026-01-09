@@ -30,7 +30,7 @@ function ga4_req_row(string $label, bool $ok, string $details = ''): string
 $autoloadPath = (string)($_SERVER['DOCUMENT_ROOT'] ?? '') . '/vendor/autoload.php';
 $autoloadOk = is_file($autoloadPath) && is_readable($autoloadPath);
 $classOk = false;
-$className = \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient::class;
+$className = \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient::class;
 if ($autoloadOk) {
     // Best effort: if vendor is present, load it and check class.
     require_once $autoloadPath;
