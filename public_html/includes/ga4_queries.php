@@ -14,6 +14,7 @@ use Google\Analytics\Data\V1beta\FilterExpression;
 use Google\Analytics\Data\V1beta\FilterExpressionList;
 use Google\Analytics\Data\V1beta\Metric;
 use Google\Analytics\Data\V1beta\Row;
+use Google\Analytics\Data\V1beta\RunReportRequest;
 
 function ga4_property_name(string $propertyId): string
 {
@@ -91,10 +92,37 @@ function ga4_and_filters(array $filters): ?FilterExpression
     ]);
 }
 
+function ga4_run_report_request_from_array(array $request): RunReportRequest
+{
+    $req = new RunReportRequest();
+
+    if (array_key_exists('property', $request)) {
+        $req->setProperty((string)$request['property']);
+    }
+    if (isset($request['date_ranges']) && is_array($request['date_ranges'])) {
+        $req->setDateRanges($request['date_ranges']);
+    }
+    if (isset($request['dimensions']) && is_array($request['dimensions'])) {
+        $req->setDimensions($request['dimensions']);
+    }
+    if (isset($request['metrics']) && is_array($request['metrics'])) {
+        $req->setMetrics($request['metrics']);
+    }
+    if (isset($request['dimension_filter']) && $request['dimension_filter'] instanceof FilterExpression) {
+        $req->setDimensionFilter($request['dimension_filter']);
+    }
+    if (isset($request['limit'])) {
+        $req->setLimit((int)$request['limit']);
+    }
+
+    return $req;
+}
+
 function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, array $logCtx): array
 {
     try {
-        $resp = $client->runReport($request);
+        $req = ga4_run_report_request_from_array($request);
+        $resp = $client->runReport($req);
         return ['ok' => true, 'response' => $resp];
     } catch (Throwable $e) {
         log_error('GA4 runReport failed', [
