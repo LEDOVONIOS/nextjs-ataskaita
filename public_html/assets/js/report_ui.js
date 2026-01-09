@@ -27,6 +27,15 @@
       "SEO GA4 users:",
       ROOT.sections.traffic?.seo?.visits?.totals?.users
     );
+    // TEMP debug (Phase 3.4)
+    // eslint-disable-next-line no-console
+    console.log("SOC_ORG users:", ROOT.sections.traffic?.social_organic?.visits?.totals?.users);
+    // eslint-disable-next-line no-console
+    console.log("SOC_PAID users:", ROOT.sections.traffic?.social_paid?.visits?.totals?.users);
+    // eslint-disable-next-line no-console
+    console.log("REF users:", ROOT.sections.traffic?.referral?.visits?.totals?.users);
+    // eslint-disable-next-line no-console
+    console.log("EMAIL users:", ROOT.sections.traffic?.email?.visits?.totals?.users);
 
     var data = ROOT;
     var meta = data.meta || {};
@@ -46,6 +55,21 @@
       }
     }
 
+    function trafficKeyForView(view) {
+      // Views come from report.php (?view=...); traffic segments live under sections.traffic.<key>.
+      // Phase 3.4 mapping:
+      // - organic_social -> social_organic
+      // - paid_social    -> social_paid
+      if (!view || view === 'all') return 'all';
+      if (view === 'organic_social') return 'social_organic';
+      if (view === 'paid_social') return 'social_paid';
+      if (view === 'referral') return 'referral';
+      if (view === 'email') return 'email';
+      if (view === 'seo') return 'seo';
+      if (view === 'ppc') return 'ppc';
+      return 'all';
+    }
+
     function resolveActiveKey() {
       var view = activeViewFromMetaOrUrl();
       var key = 'all_visitors_report';
@@ -58,6 +82,7 @@
 
     // Always reconcile active key (report.php may set a default).
     window.ACTIVE_REPORT_KEY = resolveActiveKey();
+    window.ACTIVE_TRAFFIC_KEY = trafficKeyForView(activeViewFromMetaOrUrl());
 
     var isSegmentView = !!(window.ACTIVE_REPORT_KEY && window.ACTIVE_REPORT_KEY !== 'all_visitors_report' && window.ACTIVE_REPORT_KEY !== 'seo_report' && window.ACTIVE_REPORT_KEY !== 'ppc_report');
 
@@ -158,6 +183,47 @@
     return Array.isArray(v) ? v : [];
   }
 
+  function isPlainObject(v) {
+    return v && typeof v === 'object' && !Array.isArray(v);
+  }
+
+  function metricThis(m) {
+    if (m == null) return null;
+    if (isPlainObject(m) && Object.prototype.hasOwnProperty.call(m, 'this')) return m.this;
+    return m;
+  }
+
+  function metricLast(m) {
+    if (m == null) return null;
+    if (isPlainObject(m) && Object.prototype.hasOwnProperty.call(m, 'last')) return m.last;
+    return null;
+  }
+
+  function normalizeBySourceMap(v) {
+    if (!v) return {};
+    if (Array.isArray(v)) {
+      var out = {};
+      for (var i = 0; i < v.length; i++) {
+        var row = v[i] || {};
+        var k = (row.key != null) ? String(row.key) : ((row.source != null) ? String(row.source) : String(i));
+        out[k] = row;
+      }
+      return out;
+    }
+    if (isPlainObject(v)) return v;
+    return {};
+  }
+
+  function deriveSourcesFromBySourceMap(map) {
+    var out = [];
+    if (!map || typeof map !== 'object') return out;
+    for (var k in map) {
+      if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
+      out.push({ key: String(k), label: String(k) });
+    }
+    return out;
+  }
+
   function excludedEventsOrDefault(v) {
     var arr = safeArray(v);
     return arr.length ? arr : DEFAULT_EXCLUDED_EVENTS.slice();
@@ -215,8 +281,99 @@
     return null;
   }
 
+  function getActiveTrafficSegment() {
+    var t = (ROOT && ROOT.sections && ROOT.sections.traffic) ? ROOT.sections.traffic : null;
+    var key = String(window.ACTIVE_TRAFFIC_KEY || 'all');
+    if (t && t[key]) return t[key];
+    if (t && t.all) return t.all;
+    return { visits: { timeseries: { labels: [], this: [], last: [] }, totals: {}, by_source: {} }, behavior: { totals: {}, by_source: {} }, sales: { enabled: false, totals: {}, by_source: {} }, goals: { excluded_events: DEFAULT_EXCLUDED_EVENTS.slice(), goal_names: [], totals_this: { sessions: 0, goals: {} }, totals_last: { sessions: 0, goals: {} }, by_source: {} }, demographics: { gender: [], browsers: [], devices: [], age: [], cities: [] } };
+  }
+
+  function buildReportFromTrafficSegment() {
+    var seg = getActiveTrafficSegment();
+    var visits = (seg && seg.visits) ? seg.visits : {};
+    var behavior = (seg && seg.behavior) ? seg.behavior : {};
+    var sales = (seg && seg.sales) ? seg.sales : {};
+    var goals = (seg && seg.goals) ? seg.goals : {};
+    var demo = (seg && seg.demographics) ? seg.demographics : {};
+
+    var vTotals = isPlainObject(visits.totals) ? visits.totals : {};
+    var bTotals = isPlainObject(behavior.totals) ? behavior.totals : {};
+    var sTotals = isPlainObject(sales.totals) ? sales.totals : {};
+
+    var vBy = normalizeBySourceMap(visits.by_source);
+    var bBy = normalizeBySourceMap(behavior.by_source);
+    var sBy = normalizeBySourceMap(sales.by_source);
+    var gBy = normalizeBySourceMap(goals.by_source);
+
+    var sources = safeArray(seg.sources);
+    if (!sources.length) sources = deriveSourcesFromBySourceMap(vBy);
+
+    var ts = (visits && visits.timeseries) ? visits.timeseries : null;
+    if (!ts || !Array.isArray(ts.labels)) ts = { labels: [], this: [], last: [] };
+
+    return {
+      segment_key: String(window.ACTIVE_TRAFFIC_KEY || ''),
+      sources: sources,
+      visits: {
+        timeseries: ts,
+        totals: {
+          users: metricThis(vTotals.users),
+          new_users: metricThis(vTotals.new_users),
+          sessions: metricThis(vTotals.sessions),
+          last_users: metricLast(vTotals.users),
+          last_new_users: metricLast(vTotals.new_users),
+          last_sessions: metricLast(vTotals.sessions)
+        },
+        by_source: vBy
+      },
+      behavior: {
+        totals: {
+          engagement_rate: metricThis(bTotals.engagement_rate),
+          pages_per_session: metricThis(bTotals.pages_per_session),
+          avg_session_duration_sec: metricThis(bTotals.avg_session_duration_sec),
+          last_engagement_rate: metricLast(bTotals.engagement_rate),
+          last_pages_per_session: metricLast(bTotals.pages_per_session),
+          last_avg_session_duration_sec: metricLast(bTotals.avg_session_duration_sec)
+        },
+        by_source: bBy
+      },
+      sales: {
+        enabled: !!sales.enabled,
+        totals: {
+          conversion_rate: metricThis(sTotals.conversion_rate),
+          transactions: metricThis((sTotals.transactions != null) ? sTotals.transactions : sTotals.purchases),
+          revenue: metricThis(sTotals.revenue),
+          last_conversion_rate: metricLast(sTotals.conversion_rate),
+          last_transactions: metricLast((sTotals.transactions != null) ? sTotals.transactions : sTotals.purchases),
+          last_revenue: metricLast(sTotals.revenue)
+        },
+        by_source: sBy
+      },
+      goals: {
+        excluded_events: safeArray(goals.excluded_events),
+        goal_names: safeArray(goals.goal_names),
+        totals_this: isPlainObject(goals.totals_this) ? goals.totals_this : { sessions: 0, goals: {} },
+        totals_last: isPlainObject(goals.totals_last) ? goals.totals_last : { sessions: 0, goals: {} },
+        by_source: gBy
+      },
+      demographics: {
+        gender: safeArray(demo.gender),
+        browsers: safeArray(demo.browsers),
+        devices: safeArray(demo.devices),
+        age: safeArray(demo.age),
+        cities: safeArray(demo.cities)
+      }
+    };
+  }
+
   function getActiveReport() {
     var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
+    // Phase 3.4: Segment views (social/referral/email) render like All Visitors, but read from ROOT.sections.traffic[ACTIVE_TRAFFIC_KEY].
+    // We detect these as custom view keys (not seo_report/ppc_report/all_visitors_report).
+    if (key && key !== 'seo_report' && key !== 'ppc_report' && key !== 'all_visitors_report') {
+      return buildReportFromTrafficSegment();
+    }
     // STEP 3 — Active report key wiring
     var out = getSectionByKeyOrSegment(key);
     if (!out && !didWarnMissingActiveReport) {
@@ -316,15 +473,19 @@
       esc(fmtNumber(totals.last_sessions, 0))
     ], false));
 
-    for (var i = 0; i < srcs.length; i++) {
-      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-      var label = sourceLabel(k, srcs[i] && srcs[i].label);
-      var s = bySource && k ? (bySource[k] || {}) : {};
-      rows.push(lineRow(label, [
-        esc(fmtNumber(s.users, 0)),
-        esc(fmtNumber(s.new_users, 0)),
-        esc(fmtNumber(s.sessions, 0))
-      ], false));
+    if (!srcs.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < srcs.length; i++) {
+        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+        var label = sourceLabel(k, srcs[i] && srcs[i].label);
+        var s = bySource && k ? (bySource[k] || {}) : {};
+        rows.push(lineRow(label, [
+          esc(fmtNumber(metricThis(s.users), 0)),
+          esc(fmtNumber(metricThis(s.new_users), 0)),
+          esc(fmtNumber(metricThis(s.sessions), 0))
+        ], false));
+      }
     }
 
     elVisitsTable.innerHTML = makeTableHTML(headers, rows);
@@ -374,15 +535,19 @@
       esc(fmtMinutesFromSeconds(totals.last_avg_session_duration_sec))
     ], false));
 
-    for (var i = 0; i < srcs.length; i++) {
-      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-      var label = sourceLabel(k, srcs[i] && srcs[i].label);
-      var s = bySource && k ? (bySource[k] || {}) : {};
-      rows.push(lineRow(label, [
-        esc(fmtPctRate(s.engagement_rate)),
-        esc(fmtNumber(s.pages_per_session, 1)),
-        esc(fmtMinutesFromSeconds(s.avg_session_duration_sec))
-      ], false));
+    if (!srcs.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < srcs.length; i++) {
+        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+        var label = sourceLabel(k, srcs[i] && srcs[i].label);
+        var s = bySource && k ? (bySource[k] || {}) : {};
+        rows.push(lineRow(label, [
+          esc(fmtPctRate(metricThis(s.engagement_rate))),
+          esc(fmtNumber(metricThis(s.pages_per_session), 1)),
+          esc(fmtMinutesFromSeconds(metricThis(s.avg_session_duration_sec)))
+        ], false));
+      }
     }
 
     elBehaviorTable.innerHTML = makeTableHTML(headers, rows);
@@ -439,15 +604,19 @@
       esc(fmtNumber(totals.last_revenue, 0))
     ], false));
 
-    for (var i = 0; i < srcs.length; i++) {
-      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-      var label = sourceLabel(k, srcs[i] && srcs[i].label);
-      var s = bySource && k ? (bySource[k] || {}) : {};
-      rows.push(lineRow(label, [
-        esc(fmtPctRate(s.conversion_rate)),
-        esc(fmtNumber(s.transactions, 0)),
-        esc(fmtNumber(s.revenue, 0))
-      ], false));
+    if (!srcs.length) {
+      rows.push(lineRow('—', ['—', '—', '—'], false));
+    } else {
+      for (var i = 0; i < srcs.length; i++) {
+        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+        var label = sourceLabel(k, srcs[i] && srcs[i].label);
+        var s = bySource && k ? (bySource[k] || {}) : {};
+        rows.push(lineRow(label, [
+          esc(fmtPctRate(metricThis(s.conversion_rate))),
+          esc(fmtNumber(metricThis((s.transactions != null) ? s.transactions : s.purchases), 0)),
+          esc(fmtNumber(metricThis(s.revenue), 0))
+        ], false));
+      }
     }
 
     elSalesTable.innerHTML = makeTableHTML(headers, rows);
@@ -513,15 +682,19 @@
       return goalCell(cnt, totalsLast.sessions);
     }), false));
 
-    for (var i = 0; i < srcs.length; i++) {
-      var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
-      var label = sourceLabel(k, srcs[i] && srcs[i].label);
-      var s = bySource && k ? (bySource[k] || {}) : {};
-      var sess = s.sessions || 0;
-      var gMap = s.goals || {};
-      rows.push(lineRow(label, goalNames.map(function (g) {
-        return goalCell(gMap[g] || 0, sess);
-      }), false));
+    if (!srcs.length) {
+      rows.push(lineRow('—', goalNames.map(function () { return '—'; }), false));
+    } else {
+      for (var i = 0; i < srcs.length; i++) {
+        var k = String(srcs[i] && srcs[i].key != null ? srcs[i].key : '');
+        var label = sourceLabel(k, srcs[i] && srcs[i].label);
+        var s = bySource && k ? (bySource[k] || {}) : {};
+        var sess = s.sessions || 0;
+        var gMap = s.goals || {};
+        rows.push(lineRow(label, goalNames.map(function (g) {
+          return goalCell(gMap[g] || 0, sess);
+        }), false));
+      }
     }
 
     elGoalsTable.innerHTML = makeTableHTML(headers, rows);
@@ -1145,6 +1318,14 @@
 
     var total = rows.reduce(function (acc, r) { return acc + r.value; }, 0);
     if (!isFinite(total) || total <= 0) total = 0;
+    if (!rows.length || total <= 0) {
+      // Placeholder for empty donut data.
+      try {
+        while (legend.firstChild) legend.removeChild(legend.firstChild);
+        legend.textContent = '—';
+      } catch (e0) {}
+      return;
+    }
 
     var labels = rows.map(function (r) { return r.label; });
     var values = rows.map(function (r) { return r.value; });
@@ -1561,6 +1742,34 @@
     }
   }
 
+  function viewFromPresetLink(link) {
+    if (!link) return '';
+    var v = link.getAttribute ? String(link.getAttribute('data-report-view') || '') : '';
+    if (v) return v;
+    var href = link.getAttribute ? String(link.getAttribute('href') || '') : '';
+    if (!href) return '';
+    try {
+      var u = new URL(href, window.location.origin);
+      return String(u.searchParams.get('view') || '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setSidebarActiveAny(view) {
+    var links = document.querySelectorAll('.report3__presetLink');
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      var v = viewFromPresetLink(a);
+      var isActive = String(v || '') === String(view || '');
+      try {
+        a.classList.toggle('is-active', isActive);
+        if (isActive) a.setAttribute('aria-current', 'page');
+        else a.removeAttribute('aria-current');
+      } catch (e) {}
+    }
+  }
+
   function toggleViews(activeView) {
     var nodes = document.querySelectorAll('.report3__view[data-view]');
     for (var i = 0; i < nodes.length; i++) {
@@ -1598,10 +1807,18 @@
     } catch (e) {}
   }
 
+  function containerViewForView(view) {
+    if (view === 'seo') return 'seo';
+    if (view === 'ppc') return 'ppc';
+    // Segment views reuse the "all" container markup.
+    return 'all';
+  }
+
   function reportKeyForView(view) {
     if (view === 'seo') return 'seo_report';
     if (view === 'ppc') return 'ppc_report';
-    return 'all_visitors_report';
+    if (!view || view === 'all') return 'all_visitors_report';
+    return view; // segment/custom view key
   }
 
   function viewForReportKey(key) {
@@ -1647,22 +1864,30 @@
 
   function setupSidebarRouting() {
     document.addEventListener('click', function (e) {
-      var link = e.target && e.target.closest ? e.target.closest('.report3__presetLink[data-report-view]') : null;
+      var link = e.target && e.target.closest ? e.target.closest('.report3__presetLink') : null;
       if (!link) return;
-      var view = String(link.getAttribute('data-report-view') || '');
-      if (view !== 'seo' && view !== 'all') return; // keep others as full reload for now
+      var view = viewFromPresetLink(link);
+      if (!view) return;
+      // Intercept all supported views (no API calls; just client-side re-render).
+      if (view !== 'seo' && view !== 'all' && view !== 'ppc' && view !== 'organic_social' && view !== 'paid_social' && view !== 'referral' && view !== 'email') {
+        return;
+      }
 
       // Only intercept if both view containers exist (no broken state).
       var hasAll = !!document.querySelector('.report3__view[data-view="all"]');
       var hasSeo = !!document.querySelector('.report3__view[data-view="seo"]');
+      var hasPpc = !!document.querySelector('.report3__view[data-view="ppc"]');
       if (view === 'seo' && !hasSeo) return;
-      if (view === 'all' && !hasAll) return;
+      if (containerViewForView(view) === 'all' && !hasAll) return;
+      if (view === 'ppc' && !hasPpc) return;
 
       e.preventDefault();
       window.ACTIVE_REPORT_KEY = reportKeyForView(view);
-      toggleViews(view);
-      setSidebarActive(view);
-      updateQuickTabsForView(view);
+      window.ACTIVE_TRAFFIC_KEY = trafficKeyForView(view);
+      var containerView = containerViewForView(view);
+      toggleViews(containerView);
+      setSidebarActiveAny(view);
+      updateQuickTabsForView(containerView);
       updateUrlViewParam(view);
       renderActiveView();
       // Keep the scroll position sensible when switching.
@@ -1693,7 +1918,7 @@
   // Ensure the correct view is visible on initial load.
   var initialView = viewForReportKey(window.ACTIVE_REPORT_KEY || 'all_visitors_report');
   toggleViews(initialView);
-  setSidebarActive(initialView);
+  setSidebarActiveAny(activeViewFromMetaOrUrl() || initialView);
   updateQuickTabsForView(initialView);
   if (initialView === 'seo') {
     setupSeoWorkSummaryUI();

@@ -128,6 +128,7 @@ function report_metric_value(mixed $metric, string $which): mixed
  */
 function report_ensure_ui_contract(array $reportData): array
 {
+    $reportData['project'] = is_array($reportData['project'] ?? null) ? (array)$reportData['project'] : [];
     $reportData['sections'] = is_array($reportData['sections'] ?? null) ? (array)$reportData['sections'] : [];
 
     // Ensure traffic line chart path exists (used by report_ui.js for the main visits chart).
@@ -136,6 +137,66 @@ function report_ensure_ui_contract(array $reportData): array
     $trafficVisits = is_array($trafficAll['visits'] ?? null) ? (array)$trafficAll['visits'] : [];
     $trafficVisitsTs = is_array($trafficVisits['timeseries'] ?? null) ? (array)$trafficVisits['timeseries'] : null;
     $trafficVisitsTotals = is_array($trafficVisits['totals'] ?? null) ? (array)$trafficVisits['totals'] : [];
+
+    $ensureTrafficSegment = function (mixed $seg, array $fallbackAll, array $fallbackTs, array $fallbackTotals, bool $includeSales): array {
+        $s = is_array($seg) ? (array)$seg : [];
+
+        $ensureTimeseries = function (mixed $ts) use ($fallbackTs): array {
+            $arr = is_array($ts) ? (array)$ts : [];
+            return [
+                'labels' => is_array($arr['labels'] ?? null) ? array_values((array)$arr['labels']) : ($fallbackTs['labels'] ?? []),
+                'this' => is_array($arr['this'] ?? null) ? array_values((array)$arr['this']) : ($fallbackTs['this'] ?? []),
+                'last' => is_array($arr['last'] ?? null) ? array_values((array)$arr['last']) : ($fallbackTs['last'] ?? []),
+            ];
+        };
+
+        $ensureBySource = function (mixed $v): array {
+            return is_array($v) ? (array)$v : [];
+        };
+
+        $visits = is_array($s['visits'] ?? null) ? (array)$s['visits'] : [];
+        $behavior = is_array($s['behavior'] ?? null) ? (array)$s['behavior'] : [];
+        $sales = is_array($s['sales'] ?? null) ? (array)$s['sales'] : [];
+        $goals = is_array($s['goals'] ?? null) ? (array)$s['goals'] : [];
+        $demo = is_array($s['demographics'] ?? null) ? (array)$s['demographics'] : [];
+
+        $visits['timeseries'] = $ensureTimeseries($visits['timeseries'] ?? null);
+        $visits['totals'] = is_array($visits['totals'] ?? null) ? (array)$visits['totals'] : ($fallbackTotals ?: []);
+        $visits['by_source'] = $ensureBySource($visits['by_source'] ?? null);
+
+        $behavior['totals'] = is_array($behavior['totals'] ?? null) ? (array)$behavior['totals'] : [];
+        $behavior['by_source'] = $ensureBySource($behavior['by_source'] ?? null);
+
+        $sales['enabled'] = isset($sales['enabled']) ? (bool)$sales['enabled'] : $includeSales;
+        $sales['totals'] = is_array($sales['totals'] ?? null) ? (array)$sales['totals'] : [];
+        $sales['by_source'] = $ensureBySource($sales['by_source'] ?? null);
+
+        $goals['excluded_events'] = is_array($goals['excluded_events'] ?? null) ? (array)$goals['excluded_events'] : ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+        $goals['goal_names'] = is_array($goals['goal_names'] ?? null) ? (array)$goals['goal_names'] : [];
+        $goals['totals_this'] = is_array($goals['totals_this'] ?? null) ? (array)$goals['totals_this'] : ['sessions' => 0, 'goals' => []];
+        $goals['totals_last'] = is_array($goals['totals_last'] ?? null) ? (array)$goals['totals_last'] : ['sessions' => 0, 'goals' => []];
+        $goals['by_source'] = $ensureBySource($goals['by_source'] ?? null);
+
+        $s['visits'] = $visits;
+        $s['behavior'] = $behavior;
+        $s['sales'] = $sales;
+        $s['goals'] = $goals;
+        if (!isset($s['demographics']) || !is_array($s['demographics'])) {
+            $s['demographics'] = [
+                'gender' => is_array($demo['gender'] ?? null) ? (array)$demo['gender'] : [],
+                'browsers' => is_array($demo['browsers'] ?? null) ? (array)$demo['browsers'] : [],
+                'devices' => is_array($demo['devices'] ?? null) ? (array)$demo['devices'] : [],
+                'age' => is_array($demo['age'] ?? null) ? (array)$demo['age'] : [],
+                'cities' => is_array($demo['cities'] ?? null) ? (array)$demo['cities'] : [],
+            ];
+        }
+
+        // If segment is empty, fallback to "all" segment structure.
+        if (!$s) {
+            $s = $fallbackAll;
+        }
+        return $s;
+    };
 
     // Ensure SEO traffic GA4 paths exist (Phase 3.2 requirement).
     $trafficSeo = is_array($traffic['seo'] ?? null) ? (array)$traffic['seo'] : [];
@@ -148,6 +209,24 @@ function report_ensure_ui_contract(array $reportData): array
     }
     $trafficSeo['visits'] = $seoVisits;
     $traffic['seo'] = $trafficSeo;
+
+    // STEP 2 — Ensure all traffic segments exist and never break the UI.
+    $includeSales = ((int)($reportData['project']['show_sales_section'] ?? 1)) === 1;
+    $fallbackTs = $trafficVisitsTs ?: ['labels' => [], 'this' => [], 'last' => []];
+    $fallbackAll = is_array($traffic['all'] ?? null) ? (array)$traffic['all'] : [];
+
+    $keys = ['all', 'seo', 'ppc', 'social_organic', 'social_paid', 'referral', 'email'];
+    foreach ($keys as $k) {
+        $traffic[$k] = $ensureTrafficSegment($traffic[$k] ?? null, $fallbackAll, $fallbackTs, $trafficVisitsTotals, $includeSales);
+    }
+
+    // Guarantee the new segment chart paths ALWAYS exist (fallback to all).
+    foreach (['social_organic', 'social_paid', 'referral', 'email'] as $k) {
+        if (!isset($traffic[$k]['visits']['timeseries']) || !is_array($traffic[$k]['visits']['timeseries'])) {
+            $traffic[$k]['visits']['timeseries'] = $fallbackTs;
+        }
+    }
+
     $reportData['sections']['traffic'] = $traffic;
 
     // Ensure all_visitors_report exists (used by report_ui.js tables/donuts).
@@ -316,26 +395,45 @@ function normalize_report_contract(array $snapshot, array $row): array
             ];
         };
 
-        $ensureSegment = function (mixed $seg) use ($ensureTimeseries): array {
+        $ensureSegment = function (mixed $seg) use ($ensureTimeseries, $in): array {
             $s = is_array($seg) ? (array)$seg : [];
             $visits = is_array($s['visits'] ?? null) ? (array)$s['visits'] : [];
             $behavior = is_array($s['behavior'] ?? null) ? (array)$s['behavior'] : [];
             $sales = is_array($s['sales'] ?? null) ? (array)$s['sales'] : [];
             $goals = is_array($s['goals'] ?? null) ? (array)$s['goals'] : [];
+            $demo = is_array($s['demographics'] ?? null) ? (array)$s['demographics'] : [];
 
             $visits['timeseries'] = $ensureTimeseries($visits['timeseries'] ?? null);
             $visits['totals'] = is_array($visits['totals'] ?? null) ? (array)$visits['totals'] : [];
+            $visits['by_source'] = is_array($visits['by_source'] ?? null) ? (array)$visits['by_source'] : [];
             $behavior['timeseries'] = $ensureTimeseries($behavior['timeseries'] ?? null);
             $behavior['totals'] = is_array($behavior['totals'] ?? null) ? (array)$behavior['totals'] : [];
+            $behavior['by_source'] = is_array($behavior['by_source'] ?? null) ? (array)$behavior['by_source'] : [];
             $sales['timeseries'] = $ensureTimeseries($sales['timeseries'] ?? null);
             $sales['totals'] = is_array($sales['totals'] ?? null) ? (array)$sales['totals'] : [];
+            $sales['enabled'] = isset($sales['enabled']) ? (bool)$sales['enabled'] : (((int)($in['project']['show_sales_section'] ?? 1)) === 1);
+            $sales['by_source'] = is_array($sales['by_source'] ?? null) ? (array)$sales['by_source'] : [];
             $goals['timeseries'] = $ensureTimeseries($goals['timeseries'] ?? null);
             $goals['totals'] = is_array($goals['totals'] ?? null) ? (array)$goals['totals'] : [];
+            $goals['excluded_events'] = is_array($goals['excluded_events'] ?? null) ? (array)$goals['excluded_events'] : ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+            $goals['goal_names'] = is_array($goals['goal_names'] ?? null) ? (array)$goals['goal_names'] : [];
+            $goals['totals_this'] = is_array($goals['totals_this'] ?? null) ? (array)$goals['totals_this'] : ['sessions' => 0, 'goals' => []];
+            $goals['totals_last'] = is_array($goals['totals_last'] ?? null) ? (array)$goals['totals_last'] : ['sessions' => 0, 'goals' => []];
+            $goals['by_source'] = is_array($goals['by_source'] ?? null) ? (array)$goals['by_source'] : [];
 
             $s['visits'] = $visits;
             $s['behavior'] = $behavior;
             $s['sales'] = $sales;
             $s['goals'] = $goals;
+            if (!isset($s['demographics']) || !is_array($s['demographics'])) {
+                $s['demographics'] = [
+                    'gender' => is_array($demo['gender'] ?? null) ? (array)$demo['gender'] : [],
+                    'browsers' => is_array($demo['browsers'] ?? null) ? (array)$demo['browsers'] : [],
+                    'devices' => is_array($demo['devices'] ?? null) ? (array)$demo['devices'] : [],
+                    'age' => is_array($demo['age'] ?? null) ? (array)$demo['age'] : [],
+                    'cities' => is_array($demo['cities'] ?? null) ? (array)$demo['cities'] : [],
+                ];
+            }
             return $s;
         };
 
@@ -346,20 +444,15 @@ function normalize_report_contract(array $snapshot, array $row): array
         // TEMP: SEO GA4 is a clone of "all" until filtering is implemented.
         $in['sections']['traffic']['seo'] = $in['sections']['traffic']['all'];
 
-        // Enforce Phase 3.2 segment-ready shape.
-        $pickOrAll = function (string $key) use ($in, $ensureSegment): array {
-            $t2 = is_array($in['sections']['traffic'] ?? null) ? (array)$in['sections']['traffic'] : [];
-            if (isset($t2[$key]) && is_array($t2[$key])) {
-                return $ensureSegment($t2[$key]);
-            }
-            return $ensureSegment($t2['all'] ?? null);
-        };
+        // Keep existing PPC traffic segment if present; fallback to all.
+        $in['sections']['traffic']['ppc'] = $ensureSegment($in['sections']['traffic']['ppc'] ?? $in['sections']['traffic']['all']);
 
-        $in['sections']['traffic']['ppc'] = $pickOrAll('paid_search');
-        $in['sections']['traffic']['social_organic'] = $pickOrAll('social');
-        $in['sections']['traffic']['social_paid'] = $pickOrAll('paid_social');
-        $in['sections']['traffic']['referral'] = $pickOrAll('referral');
-        $in['sections']['traffic']['email'] = $pickOrAll('email');
+        // STEP 1 — TEMPORARY CLONING (until real GA4 filters exist):
+        // After traffic.all is built, clone it into the additional segments.
+        $in['sections']['traffic']['social_organic'] = $in['sections']['traffic']['all'];
+        $in['sections']['traffic']['social_paid'] = $in['sections']['traffic']['all'];
+        $in['sections']['traffic']['referral'] = $in['sections']['traffic']['all'];
+        $in['sections']['traffic']['email'] = $in['sections']['traffic']['all'];
 
         return $in;
     };
