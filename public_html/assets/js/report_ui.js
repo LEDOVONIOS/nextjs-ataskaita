@@ -1109,6 +1109,18 @@
     return safeArray(obj.items);
   }
 
+  function getPpcTrafficSegment() {
+    // Fallback for PPC view when Google Ads isn't integrated yet:
+    // use GA4 Paid Search traffic segment under sections.traffic.ppc.
+    try {
+      var t = (ROOT && ROOT.sections && ROOT.sections.traffic) ? ROOT.sections.traffic : null;
+      return (t && t.ppc) ? t.ppc : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+
   function buildPpcVisitsTable() {
     if (!elPpcVisitsTable) return;
     var items = ppcItems('campaigns');
@@ -1126,8 +1138,22 @@
 
     var rows = [];
     if (!items.length) {
-      rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—', '—'], false));
-    } else {
+ // If Ads performance isn't available, still show GA4 Paid Search traffic totals.
+      var seg = getPpcTrafficSegment();
+      var totalsPair = seg && seg.visits ? normalizeTotalsPair(seg.visits.totals || {}, ['users', 'new_users', 'sessions']) : null;
+      if (totalsPair && (totalsPair.this.users != null || totalsPair.this.sessions != null)) {
+        rows.push(lineRow('Paid Search (GA4)', [
+          '—',
+          '—',
+          '—',
+          '—',
+          esc(fmtNumber(totalsPair.this.users, 0)),
+          esc(fmtNumber(totalsPair.this.sessions, 0)),
+          '—'
+        ], false));
+      } else {
+        rows.push(lineRow('—', ['—', '—', '—', '—', '—', '—', '—'], false));
+      }    } else {
       for (var i = 0; i < items.length; i++) {
         var it = items[i] || {};
         rows.push(lineRow(it.campaign != null ? String(it.campaign) : '—', [
@@ -1260,8 +1286,18 @@
 
     var rows = [];
     if (!items.length) {
-      rows.push(lineRow('—', ['—', '—', '—'], false));
-    } else {
+ var seg = getPpcTrafficSegment();
+      var totalsPair = seg && seg.behavior ? normalizeTotalsPair(seg.behavior.totals || {}, ['engagement_rate', 'pages_per_session', 'avg_session_duration_sec']) : null;
+      if (totalsPair && (totalsPair.this.engagement_rate != null || totalsPair.this.pages_per_session != null || totalsPair.this.avg_session_duration_sec != null)) {
+        rows.push(lineRow('Paid Search (GA4)', [
+          esc(fmtPctRate(totalsPair.this.engagement_rate)),
+          esc(fmtNumber(totalsPair.this.pages_per_session, 1)),
+          esc(fmtMinutesFromSeconds(totalsPair.this.avg_session_duration_sec))
+        ], false));
+      } else {
+        rows.push(lineRow('—', ['—', '—', '—'], false));
+      }
+      } else {
       for (var i = 0; i < items.length; i++) {
         var it = items[i] || {};
         rows.push(lineRow(it.keyword != null ? String(it.keyword) : '—', [
@@ -1289,7 +1325,17 @@
 
     var rows = [];
     if (!items.length) {
-      rows.push(lineRow('—', ['—', '—', '—'], false));
+        var seg = getPpcTrafficSegment();
+      var totalsPair = seg && seg.sales ? normalizeTotalsPair(seg.sales.totals || {}, ['conversion_rate', 'purchases', 'revenue'], { purchases: 'transactions' }) : null;
+      if (totalsPair && (totalsPair.this.conversion_rate != null || totalsPair.this.purchases != null || totalsPair.this.revenue != null)) {
+        rows.push(lineRow('Paid Search (GA4)', [
+          esc(fmtPctRate(totalsPair.this.conversion_rate)),
+          esc(fmtNumber(totalsPair.this.purchases, 0)),
+          esc(fmtNumber(totalsPair.this.revenue, 2))
+        ], false));
+      } else {
+        rows.push(lineRow('—', ['—', '—', '—'], false));
+      }
     } else {
       for (var i = 0; i < items.length; i++) {
         var it = items[i] || {};
