@@ -738,10 +738,22 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         $sessThis = (int)ga4_parse_int($ga4TotalsThis['sessions'] ?? 0, 0);
         $sessLast = (int)ga4_parse_int($ga4TotalsLast['sessions'] ?? 0, 0);
 
+        // Strict "no fake rows" rule:
+        // If GA4 returns 0 metrics for ALL Visitors, do NOT synthesize placeholder by_source rows.
+        // Keep the UI contract intact, but return empty arrays for by_source tables.
+        $suppressAllBySource = false;
+        if ($trafficKey === 'all' && !is_array($visitsBySourceOverride)) {
+            $suppressAllBySource = ($usersThis === 0 && $usersLast === 0 && $newThis === 0 && $newLast === 0 && $sessThis === 0 && $sessLast === 0);
+        }
+
         $visitsBySource = [];
         $sessionsThisByKey = [];
         $sessionsLastByKey = [];
-        if (is_array($visitsBySourceOverride)) {
+        if ($suppressAllBySource) {
+            $visitsBySource = [];
+            $sessionsThisByKey = [];
+            $sessionsLastByKey = [];
+        } elseif (is_array($visitsBySourceOverride)) {
             $visitsBySource = $visitsBySourceOverride;
             foreach ($visitsBySource as $r) {
                 if (!is_array($r)) {
@@ -780,7 +792,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         $durThis = (int)ga4_parse_int($ga4TotalsThis['averageSessionDuration'] ?? 0, 0);
         $durLast = (int)ga4_parse_int($ga4TotalsLast['averageSessionDuration'] ?? 0, 0);
 
-        $behaviorBySource = phase36_build_behavior_by_source(
+        $behaviorBySource = $suppressAllBySource ? [] : phase36_build_behavior_by_source(
             $projectId,
             $year,
             $month,
@@ -801,7 +813,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         $crThis = ($sessThis > 0 && $includeSales) ? round($purchThis / $sessThis, 4) : ($includeSales ? 0.0 : null);
         $crLast = ($sessLast > 0 && $includeSales) ? round($purchLast / $sessLast, 4) : ($includeSales ? 0.0 : null);
 
-        $salesBySource = phase36_build_sales_by_source(
+        $salesBySource = $suppressAllBySource ? [] : phase36_build_sales_by_source(
             $projectId,
             $year,
             $month,
@@ -857,7 +869,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 'excluded_events' => is_array($goalsTable['excluded_events'] ?? null) ? (array)$goalsTable['excluded_events'] : ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
                 'goal_names' => is_array($goalsTable['goal_names'] ?? null) ? (array)$goalsTable['goal_names'] : [],
                 'totals' => is_array($goalsTable['totals'] ?? null) ? (array)$goalsTable['totals'] : ['this' => ['sessions' => $sessThis], 'last' => ['sessions' => $sessLast]],
-                'by_source' => is_array($goalsTable['by_source'] ?? null) ? (array)$goalsTable['by_source'] : [],
+                'by_source' => $suppressAllBySource ? [] : (is_array($goalsTable['by_source'] ?? null) ? (array)$goalsTable['by_source'] : []),
             ],
         ];
     };
@@ -1258,6 +1270,17 @@ $metrics = ['totalUsers', 'newUsers', 'sessions'];
             $sessThisTotal = (int)ga4_parse_int($tThis['sessions'] ?? 0, 0);
             $sessLastTotal = (int)ga4_parse_int($tLast['sessions'] ?? 0, 0);
             $byCount = is_array($traffic[$k]['visits']['by_source'] ?? null) ? count((array)$traffic[$k]['visits']['by_source']) : 0;
+
+            // Keep a rows-count log for the ALL segment breakdown.
+            // For ALL, we intentionally suppress placeholder by_source rows when GA4 totals are all zero.
+            if ($k === 'all') {
+                $allZero = ($usersThisTotal === 0 && $usersLastTotal === 0 && $newThisTotal === 0 && $newLastTotal === 0 && $sessThisTotal === 0 && $sessLastTotal === 0);
+                log_info('GA4 all breakdown', [
+                    'key' => 'all',
+                    'rows_this' => $allZero ? 0 : $byCount,
+                    'rows_last' => $allZero ? 0 : $byCount,
+                ]);
+            }
             log_info('GA4 segment built', [
                 'key' => $k,
                'filter' => (static function (string $tk): ?string {
