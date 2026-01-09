@@ -932,6 +932,80 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         } else {
             $ga4ClientForBreakdowns = $ga4Client;
 
+            // Debug sanity-check (logging only): confirm the property has any sessions in the last 365 days.
+            // IMPORTANT: Do not persist this into snapshots; this is strictly diagnostic logging.
+            try {
+                $property = ga4_property_name($ga4PropertyId);
+                if ($property !== '') {
+                    $debugReq = [
+                        'property' => $property,
+                        'date_ranges' => [['start_date' => '365daysAgo', 'end_date' => 'today']],
+                        'dimensions' => ['date'],
+                        'metrics' => ['sessions'],
+                        'limit' => 10,
+                    ];
+                    try {
+                        if (class_exists(\Google\Analytics\Data\V1beta\OrderBy::class) && class_exists(\Google\Analytics\Data\V1beta\OrderBy\MetricOrderBy::class)) {
+                            $debugReq['order_bys'] = [new \Google\Analytics\Data\V1beta\OrderBy([
+                                'metric' => new \Google\Analytics\Data\V1beta\OrderBy\MetricOrderBy(['metric_name' => 'sessions']),
+                                'desc' => true,
+                            ])];
+                        }
+                    } catch (Throwable $e) {
+                        // Ignore ordering if unsupported in this client version.
+                    }
+
+                    $debugRes = ga4_run_report_safe($ga4Client, $debugReq, [
+                        'kind' => 'debug_sanity_365d_sessions_by_date',
+                        'project_id' => $projectId,
+                        'ga4_property_id' => $ga4PropertyId,
+                    ]);
+                    if (($debugRes['ok'] ?? false) && isset($debugRes['response'])) {
+                        $resp = $debugRes['response'];
+                        $rows = method_exists($resp, 'getRows') ? $resp->getRows() : [];
+                        $rowCount = is_array($rows) ? count($rows) : (is_countable($rows) ? count($rows) : 0);
+                        $first = [];
+                        $i = 0;
+                        foreach ($rows as $r) {
+                            if (!is_object($r) || !method_exists($r, 'getDimensionValues')) {
+                                continue;
+                            }
+                            $dvs = $r->getDimensionValues();
+                            $rawDate = (is_array($dvs) && count($dvs) > 0 && is_object($dvs[0]) && method_exists($dvs[0], 'getValue'))
+                                ? (string)$dvs[0]->getValue()
+                                : '';
+                            $first[] = [
+                                'date' => $rawDate !== '' ? ga4_format_date_yyyymmdd($rawDate) : '',
+                                'sessions' => ga4_row_metric_value($r, 0, 0, 1),
+                            ];
+                            $i++;
+                            if ($i >= 3) {
+                                break;
+                            }
+                        }
+
+                        log_info('GA4 debug sanity-check (365d sessions by date)', [
+                            'project_id' => $projectId,
+                            'ga4_property_id' => $ga4PropertyId,
+                            'rows_returned' => $rowCount,
+                            'first_rows' => $first,
+                        ]);
+                    } else {
+                        log_warn('GA4 debug sanity-check failed', [
+                            'project_id' => $projectId,
+                            'ga4_property_id' => $ga4PropertyId,
+                            'error' => (string)($debugRes['error'] ?? 'unknown'),
+                        ]);
+                    }
+                }
+            } catch (Throwable $e) {
+                log_warn('GA4 debug sanity-check threw', [
+                    'project_id' => $projectId,
+                    'ga4_property_id' => $ga4PropertyId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             $zeroTotals = static function (bool $includeSales): array {
                 $base = [
                     'totalUsers' => '0',
