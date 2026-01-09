@@ -1109,7 +1109,8 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
                 && ga4_is_valid_property_id($ga4PropertyId)
             ) {
                 // Phase 4.1: channel segments MUST NOT fall back to "all" or placeholders.
-                // If GA4 returns 0 rows, by_source is an empty array (valid "no data" state).                $filter = ga4_segment_dimension_filter($k, true, 'sessionDefaultChannelGroup');
+                // If GA4 returns 0 rows, by_source is an empty array (valid "no data" state).
+                $filter = ga4_segment_dimension_filter($k, true, 'sessionDefaultChannelGroup');
                 $metrics = ['totalUsers', 'newUsers', 'sessions'];
                 $limit = 15;
                // Phase 4.1 scope: PPC/Referral by_source must use sessionSource (no sessionCampaignName).
