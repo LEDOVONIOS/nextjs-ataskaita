@@ -161,13 +161,73 @@ function ga4_build_client(array $context = []): array
             return $cached;
         }
 
-        $client = new \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient([
-            // analytics-data v0.22.x: pass credentials explicitly (path or decoded JSON array).
-            // Primary: decoded service-account key array.
-            // Fallback: GOOGLE_APPLICATION_CREDENTIALS env var (set above, if empty before).
-            'credentials' => $creds,
+        // Build a credentials *object* (decoded array may be ignored by some versions).
+        $sa = new \Google\Auth\Credentials\ServiceAccountCredentials($scopes, $creds);
+
+        // Auth preflight: fetch an access token once during client build.
+        // If this fails, disable GA4 early to avoid repeated runReport spam.
+        try {
+            $httpHandler = null;
+            if (class_exists(\Google\Auth\HttpHandler\HttpHandlerFactory::class)) {
+                $httpHandler = \Google\Auth\HttpHandler\HttpHandlerFactory::build();
+            }
+            $token = $sa->fetchAuthToken($httpHandler);
+        } catch (Throwable $e) {
+            $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed'];
+            log_error('GA4 client init failed: token preflight exception', [
+                'keyPath' => $keyPath,
+                'error' => $e->getMessage(),
+            ]);
+            return $cached;
+        }
+
+        $accessToken = (is_array($token) && isset($token['access_token']) && is_string($token['access_token']))
+            ? (string)$token['access_token']
+            : '';
+        if ($accessToken === '') {
+            $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed (token_missing)'];
+            log_error('GA4 client init failed: token_missing', [
+                'keyPath' => $keyPath,
+            ]);
+            return $cached;
+        }
+
+        log_info('GA4 client auth preflight', [
+            'keyPath' => $keyPath,
+            'token_ok' => true,
+            'token_len' => strlen($accessToken),
+            'has_expires_in' => (is_array($token) && array_key_exists('expires_in', $token)),
             'scopes' => $scopes,
         ]);
+
+        $clientOptions = [
+            // Primary: explicit credentials object.
+            // Fallback: GOOGLE_APPLICATION_CREDENTIALS env var (set above, if empty before).
+            'credentials' => $sa,
+            'scopes' => $scopes,
+        ];
+
+        $forceRest = (defined('GA4_FORCE_REST') && (bool)GA4_FORCE_REST);
+        if ($forceRest) {
+            $clientOptions['transport'] = 'rest';
+        }
+
+        try {
+            $client = new \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient($clientOptions);
+        } catch (Throwable $e) {
+            // If transport option isn't supported by this version, retry without it.
+            if ($forceRest && array_key_exists('transport', $clientOptions)) {
+                log_warn('GA4 client init: transport=rest unsupported; retrying without transport', [
+                    'keyPath' => $keyPath,
+                    'error' => $e->getMessage(),
+                ]);
+                unset($clientOptions['transport']);
+                $client = new \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient($clientOptions);
+            } else {
+                throw $e;
+            }
+        }
+
         $cached = ['ok' => true, 'client' => $client];
         return $cached;
     } catch (Throwable $e) {

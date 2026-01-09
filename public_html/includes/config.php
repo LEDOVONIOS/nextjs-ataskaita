@@ -45,6 +45,10 @@ const GA4_TOKEN_CACHE_FILE = __DIR__ . '/cache/ga4_token.json';
 // Cache TTL (Google tokens are usually 3600s). Use slightly less.
 const GA4_TOKEN_CACHE_TTL_SECONDS = 3300;
 
+// Force REST transport for GA4 client library (helps on shared hosting where gRPC may misbehave).
+// If unsupported by the installed google/analytics-data version, the code will retry without it.
+const GA4_FORCE_REST = true;
+
 // Best-effort: ensure GA4 folders exist (shared hosting friendly).
 // These folders should NOT be web-accessible; if your app is inside public_html,
 // keep the provided .htaccess files in /includes/keys and /includes/cache.
