@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/ga4_requirements.php';
 
 use Google\Analytics\Data\V1beta\BetaAnalyticsDataClient;
 use Google\Analytics\Data\V1beta\DateRange;
@@ -150,6 +151,9 @@ function ga4_fetch_totals_all(
     string $lastEnd,
     bool $includeSales
 ): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'totals_all', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }
@@ -250,6 +254,9 @@ function ga4_fetch_totals_by_channel_group(
     string $lastEnd,
     bool $includeSales
 ): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'totals_by_channel_group', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }
@@ -337,6 +344,9 @@ function ga4_fetch_timeseries_all(
     string $endDate,
     bool $includeSales
 ): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'timeseries_all', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }
@@ -388,6 +398,14 @@ function ga4_fetch_timeseries_by_channel_group(
     string $endDate,
     bool $includeSales
 ): array {
+    if (!ga4_requirements_ok([
+        'component' => 'ga4_queries',
+        'kind' => 'timeseries_by_channel_group',
+        'dimension' => $channelGroupDimension,
+        'property_id' => $propertyId,
+    ])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }
@@ -505,6 +523,14 @@ function ga4_fetch_totals_for_segment(
     bool $includeSales,
     string $trafficKey
 ): array {
+    if (!ga4_requirements_ok([
+        'component' => 'ga4_queries',
+        'kind' => 'totals_segment',
+        'traffic_key' => $trafficKey,
+        'property_id' => $propertyId,
+    ])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }
@@ -625,6 +651,14 @@ function ga4_fetch_timeseries_for_segment(
     bool $includeSales,
     string $trafficKey
 ): array {
+    if (!ga4_requirements_ok([
+        'component' => 'ga4_queries',
+        'kind' => 'timeseries_segment',
+        'traffic_key' => $trafficKey,
+        'property_id' => $propertyId,
+    ])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
     if (!ga4_is_valid_property_id($propertyId)) {
         return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
     }

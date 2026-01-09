@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/mock_data.php';
 require_once __DIR__ . '/ga4_client.php';
 require_once __DIR__ . '/ga4_queries.php';
+require_once __DIR__ . '/ga4_requirements.php';
 
 function mock_visitors_overview_to_phase2(int $projectId, int $year, int $month, array $mockVisitors): array
 {
@@ -604,6 +605,116 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         };
     };
 
+    $buildTrafficSegmentEmpty = static function (
+        string $trafficKey,
+        array $labels,
+        bool $includeSales
+    ): array {
+        $sources = phase36_sources_for_traffic_key($trafficKey);
+        $zeros = array_fill(0, count($labels), 0.0);
+
+        $visitsBySource = [];
+        foreach ($sources as $src) {
+            $k = (string)($src['key'] ?? '');
+            $label = (string)($src['label'] ?? $k);
+            $visitsBySource[] = [
+                'key' => $k,
+                'label' => $label,
+                'this' => ['users' => 0, 'new_users' => 0, 'sessions' => 0],
+                'last' => ['users' => 0, 'new_users' => 0, 'sessions' => 0],
+            ];
+        }
+
+        $behaviorBySource = [];
+        foreach ($sources as $src) {
+            $k = (string)($src['key'] ?? '');
+            $label = (string)($src['label'] ?? $k);
+            $behaviorBySource[] = [
+                'key' => $k,
+                'label' => $label,
+                'this' => ['engagement_rate' => 0.0, 'pages_per_session' => 0.0, 'avg_session_duration_sec' => 0],
+                'last' => ['engagement_rate' => 0.0, 'pages_per_session' => 0.0, 'avg_session_duration_sec' => 0],
+            ];
+        }
+
+        $salesBySource = [];
+        if ($includeSales) {
+            foreach ($sources as $src) {
+                $k = (string)($src['key'] ?? '');
+                $label = (string)($src['label'] ?? $k);
+                $salesBySource[] = [
+                    'key' => $k,
+                    'label' => $label,
+                    'this' => ['conversion_rate' => 0.0, 'purchases' => 0, 'revenue' => 0.0],
+                    'last' => ['conversion_rate' => 0.0, 'purchases' => 0, 'revenue' => 0.0],
+                ];
+            }
+        }
+
+        $goalNames = phase36_goal_names();
+        $goalsTotalsThis = ['sessions' => 0];
+        $goalsTotalsLast = ['sessions' => 0];
+        foreach ($goalNames as $g) {
+            $goalsTotalsThis[$g] = 0;
+            $goalsTotalsLast[$g] = 0;
+        }
+        $goalsBySource = [];
+        foreach ($sources as $src) {
+            $k = (string)($src['key'] ?? '');
+            $label = (string)($src['label'] ?? $k);
+            $rowThis = ['sessions' => 0];
+            $rowLast = ['sessions' => 0];
+            foreach ($goalNames as $g) {
+                $rowThis[$g] = 0;
+                $rowLast[$g] = 0;
+            }
+            $goalsBySource[] = [
+                'key' => $k,
+                'label' => $label,
+                'this' => $rowThis,
+                'last' => $rowLast,
+            ];
+        }
+
+        return [
+            'sources' => $sources,
+            'visits' => [
+                'timeseries' => ['labels' => $labels, 'this' => $zeros, 'last' => $zeros],
+                'totals' => [
+                    'this' => ['users' => 0, 'new_users' => 0, 'sessions' => 0],
+                    'last' => ['users' => 0, 'new_users' => 0, 'sessions' => 0],
+                ],
+                'by_source' => $visitsBySource,
+            ],
+            'behavior' => [
+                'timeseries' => ['labels' => $labels, 'this' => $zeros, 'last' => $zeros],
+                'totals' => [
+                    'this' => ['engagement_rate' => 0.0, 'pages_per_session' => 0.0, 'avg_session_duration_sec' => 0],
+                    'last' => ['engagement_rate' => 0.0, 'pages_per_session' => 0.0, 'avg_session_duration_sec' => 0],
+                ],
+                'by_source' => $behaviorBySource,
+            ],
+            'sales' => [
+                'enabled' => $includeSales,
+                'timeseries' => $includeSales ? ['labels' => $labels, 'this' => $zeros, 'last' => $zeros] : ['labels' => [], 'this' => [], 'last' => []],
+                'totals' => [
+                    'this' => ['conversion_rate' => $includeSales ? 0.0 : null, 'purchases' => $includeSales ? 0 : null, 'revenue' => $includeSales ? 0.0 : null],
+                    'last' => ['conversion_rate' => $includeSales ? 0.0 : null, 'purchases' => $includeSales ? 0 : null, 'revenue' => $includeSales ? 0.0 : null],
+                ],
+                'by_source' => $salesBySource,
+            ],
+            'goals' => [
+                'excluded_events' => ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'],
+                'goal_names' => $goalNames,
+                'totals' => [
+                    'this' => $goalsTotalsThis,
+                    'last' => $goalsTotalsLast,
+                ],
+                'by_source' => $goalsBySource,
+            ],
+        ];
+    };
+
     $buildTrafficSegmentFromGa4 = static function (
         int $projectId,
         int $year,
@@ -738,8 +849,28 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
     $ga4TsRowsLastByKey = [];
 
     $ga4ClientRes = null;
+    $ga4Req = null;
     if ($ga4PropertyId !== '' && ga4_is_valid_property_id($ga4PropertyId)) {
-        $ga4ClientRes = ga4_build_client();
+        $ga4Req = ga4_requirements_check([
+            'component' => 'report_generator',
+            'project_id' => $projectId,
+            'ga4_property_id' => $ga4PropertyId,
+        ]);
+        if (($ga4Req['ok'] ?? false)) {
+            $ga4ClientRes = ga4_build_client([
+                'project_id' => $projectId,
+                'ga4_property_id' => $ga4PropertyId,
+            ]);
+        } else {
+            $reportStatus = 'PARTIAL';
+            $snapshotErrors[] = ['scope' => 'ga4', 'message' => 'GA4 disabled: ' . (string)($ga4Req['reason'] ?? 'requirements failed')];
+            log_error('GA4 disabled: requirements failed', [
+                'project_id' => $projectId,
+                'ga4_property_id' => $ga4PropertyId,
+                'reason' => (string)($ga4Req['reason'] ?? 'unknown'),
+                'autoload' => (string)($ga4Req['autoload'] ?? ''),
+            ]);
+        }
     }
 
     if (is_array($ga4ClientRes) && ($ga4ClientRes['ok'] ?? false) && ($ga4ClientRes['client'] ?? null) instanceof \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient) {
@@ -864,7 +995,7 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
             $traffic[$k] = $buildTrafficSegmentFromGa4($projectId, $year, $month, $k, $includeSales, $tThis, $tLast, $tsVisits, $tsBehavior, $tsSales);
         } else {
             $reportStatus = 'PARTIAL';
-            $traffic[$k] = phase36_build_traffic_segment($projectId, $year, $month, $k, $thisMonth, $lastYear, $includeSales);
+            $traffic[$k] = $buildTrafficSegmentEmpty($k, $labels, $includeSales);
         }
     }
 
