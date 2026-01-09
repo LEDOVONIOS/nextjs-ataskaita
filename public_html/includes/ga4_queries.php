@@ -506,6 +506,152 @@ function ga4_fetch_totals_all(
     ];
 }
 
+/**
+ * Core traffic totals (metrics-only, NO dimensions) for two date ranges.
+ *
+ * Required by UI contract to keep segment totals consistent:
+ * metrics: sessions, totalUsers, newUsers
+ *
+ * Returns:
+ *  - ['ok'=>true, 'this'=>[metricName=>string], 'last'=>[metricName=>string]]
+ *  - ['ok'=>false, 'error'=>string]
+ */
+function ga4_fetch_core_totals_two_ranges(
+    BetaAnalyticsDataClient $client,
+    string $propertyId,
+    string $thisStart,
+    string $thisEnd,
+    string $lastStart,
+    string $lastEnd,
+    ?FilterExpression $filterExpr,
+    array $logCtx
+): array {
+    if (!ga4_requirements_ok(['component' => 'ga4_queries', 'kind' => 'core_totals', 'property_id' => $propertyId])) {
+        return ['ok' => false, 'error' => 'GA4 disabled: requirements not met'];
+    }
+    if (!ga4_is_valid_property_id($propertyId)) {
+        return ['ok' => false, 'error' => 'Invalid GA4 property ID'];
+    }
+    $property = ga4_property_name($propertyId);
+    $dateRanges = [
+        new DateRange(['start_date' => $thisStart, 'end_date' => $thisEnd]),
+        new DateRange(['start_date' => $lastStart, 'end_date' => $lastEnd]),
+    ];
+    $metrics = [
+        new Metric(['name' => 'sessions']),
+        new Metric(['name' => 'totalUsers']),
+        new Metric(['name' => 'newUsers']),
+    ];
+    $req = [
+        'property' => $property,
+        'date_ranges' => $dateRanges,
+        'metrics' => $metrics,
+        // NO dimensions (explicitly).
+    ];
+    if ($filterExpr instanceof FilterExpression) {
+        $req['dimension_filter'] = $filterExpr;
+    }
+
+    $ctx = ['kind' => 'core_totals'] + $logCtx;
+    $ctx['has_filter'] = $filterExpr instanceof FilterExpression;
+    $res = ga4_run_report_safe($client, $req, $ctx);
+    if (!($res['ok'] ?? false)) {
+        return $res;
+    }
+
+    $resp = $res['response'];
+    $rows = $resp->getRows();
+    if (count($rows) < 1) {
+        return ['ok' => true, 'this' => [], 'last' => []];
+    }
+
+    $row = $rows[0];
+    $rangesCount = 2;
+    $names = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $names[] = (string)$mh->getName();
+    }
+
+    $outThis = [];
+    $outLast = [];
+    foreach ($names as $i => $metricName) {
+        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
+        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
+    }
+
+    return ['ok' => true, 'this' => $outThis, 'last' => $outLast];
+}
+
+/**
+ * Core totals for a traffic key (metrics-only, NO dimensions), with filter fallbacks.
+ *
+ * - Prefer exact sessionDefaultChannelGroup
+ * - Retry with sessionChannelGroup
+ * - Fallback to sessionSourceMedium regex
+ */
+function ga4_fetch_core_totals_for_traffic_key(
+    BetaAnalyticsDataClient $client,
+    string $propertyId,
+    string $thisStart,
+    string $thisEnd,
+    string $lastStart,
+    string $lastEnd,
+    string $trafficKey
+): array {
+    $trafficKey = trim($trafficKey);
+    if ($trafficKey === '') {
+        return ['ok' => false, 'error' => 'Invalid traffic key'];
+    }
+
+    // Attempt #1: sessionDefaultChannelGroup exact match (preferred)
+    $filter = ga4_segment_dimension_filter($trafficKey, true, 'sessionDefaultChannelGroup');
+    $res = ga4_fetch_core_totals_two_ranges(
+        $client,
+        $propertyId,
+        $thisStart,
+        $thisEnd,
+        $lastStart,
+        $lastEnd,
+        $filter,
+        ['trafficKey' => $trafficKey, 'filter' => 'channel_group', 'filter_field' => 'sessionDefaultChannelGroup']
+    );
+    if (($res['ok'] ?? false) || $trafficKey === 'all') {
+        return $res;
+    }
+
+    // Attempt #2: sessionChannelGroup exact match (alternate field)
+    $filter2 = ga4_segment_dimension_filter($trafficKey, true, 'sessionChannelGroup');
+    if ($filter2 instanceof FilterExpression) {
+        $res2 = ga4_fetch_core_totals_two_ranges(
+            $client,
+            $propertyId,
+            $thisStart,
+            $thisEnd,
+            $lastStart,
+            $lastEnd,
+            $filter2,
+            ['trafficKey' => $trafficKey, 'filter' => 'channel_group', 'filter_field' => 'sessionChannelGroup']
+        );
+        if (($res2['ok'] ?? false)) {
+            return $res2;
+        }
+    }
+
+    // Attempt #3: sessionSourceMedium fallback regex
+    $filter3 = ga4_segment_dimension_filter($trafficKey, false);
+    $res3 = ga4_fetch_core_totals_two_ranges(
+        $client,
+        $propertyId,
+        $thisStart,
+        $thisEnd,
+        $lastStart,
+        $lastEnd,
+        $filter3,
+        ['trafficKey' => $trafficKey, 'filter' => 'source_medium']
+    );
+    return $res3;
+}
+
 function ga4_fetch_totals_by_channel_group(
     BetaAnalyticsDataClient $client,
     string $propertyId,
@@ -1395,4 +1541,3 @@ function ga4_fetch_breakdown(
     }
     return ['ok' => true, 'rows' => $out];
 }
-
