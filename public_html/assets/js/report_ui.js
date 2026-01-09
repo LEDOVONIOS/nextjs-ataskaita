@@ -1,3 +1,35 @@
+document.documentElement.setAttribute('data-report-ui-loaded', '1');
+
+
+document.addEventListener("DOMContentLoaded", () => {
+  const ROOT = window.REPORT_DATA || window.Report_DATA;
+  const users = ROOT?.sections?.all_visitors_report?.visits?.totals?.users;
+
+  const el = document.createElement("div");
+  el.textContent = "SMOKE users = " + (users ?? "undefined");
+  el.style.cssText = "position:fixed;bottom:50px;right:10px;padding:8px 10px;background:#05b;color:#fff;z-index:99999;font:12px/1.2 sans-serif;border-radius:6px;";
+  document.body.appendChild(el);
+});
+
+
+console.log("report_ui.js start");
+
+const ROOT = window.REPORT_DATA || window.Report_DATA;
+console.log(
+  "ROOT?",
+  !!ROOT,
+  "sections keys:",
+  ROOT?.sections ? Object.keys(ROOT.sections) : null
+);
+
+document.addEventListener("DOMContentLoaded", () => {
+  console.log("DOMContentLoaded fired");
+  console.log(
+    "visitors users:",
+    ROOT?.sections?.all_visitors_report?.visits?.totals?.users
+  );
+});
+
 /* global Chart */
 (function () {
   'use strict';
