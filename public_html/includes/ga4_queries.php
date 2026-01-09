@@ -199,29 +199,17 @@ function ga4_run_report_request_from_array(array $request): RunReportRequest
 function ga4_run_report_request(BetaAnalyticsDataClient $client, array $payload, array $ctx): array
 {
     try {
-        // Preferred: explicit RunReportRequest when class exists.
-        if (class_exists(RunReportRequest::class)) {
-            try {
-                $req = new RunReportRequest($payload);
-                $resp = $client->runReport($req);
-                return ['ok' => true, 'response' => $resp, 'request_type' => 'RunReportRequest'];
-            } catch (Throwable $e1) {
-                // Fallback: some versions don't accept array in constructor.
-                try {
-                    $req2 = ga4_run_report_request_from_array($payload);
-                    $resp2 = $client->runReport($req2);
-                    return ['ok' => true, 'response' => $resp2, 'request_type' => 'RunReportRequest'];
-                } catch (Throwable $e2) {
-                    // Final fallback: associative array request.
-                    $resp3 = $client->runReport($payload);
-                    return ['ok' => true, 'response' => $resp3, 'request_type' => 'array'];
-                }
-            }
+        // Always call with a RunReportRequest (some client versions do not accept arrays).
+        // Keep the payload identical; only wrap it in the request object.
+        try {
+            $req = new RunReportRequest($payload);
+        } catch (Throwable $e) {
+            // Some versions don't accept an array in the constructor; set fields explicitly.
+            $req = ga4_run_report_request_from_array($payload);
         }
 
-        // Fallback: associative array request.
-        $resp = $client->runReport($payload);
-        return ['ok' => true, 'response' => $resp, 'request_type' => 'array'];
+        $resp = $client->runReport($req);
+        return ['ok' => true, 'response' => $resp, 'request_type' => 'RunReportRequest'];
     } catch (Throwable $e) {
         $msg = (string)$e->getMessage();
         $decoded = null;
