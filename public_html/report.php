@@ -1196,6 +1196,11 @@ window.REPORT_DATA = <?php echo json_encode(
     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
 ); ?>;
 </script>
+<script>
+// STEP 3: For now, always render the All Visitors report on this page.
+// (Later this will be wired to sidebar interactions.)
+window.ACTIVE_REPORT_KEY = "all_visitors_report";
+</script>
 <script src="<?php echo e(url('/assets/js/report_ui.js')); ?>"></script>
 
 <?php
