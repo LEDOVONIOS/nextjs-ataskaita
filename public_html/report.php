@@ -135,6 +135,20 @@ function report_ensure_ui_contract(array $reportData): array
     $trafficAll = is_array($traffic['all'] ?? null) ? (array)$traffic['all'] : [];
     $trafficVisits = is_array($trafficAll['visits'] ?? null) ? (array)$trafficAll['visits'] : [];
     $trafficVisitsTs = is_array($trafficVisits['timeseries'] ?? null) ? (array)$trafficVisits['timeseries'] : null;
+    $trafficVisitsTotals = is_array($trafficVisits['totals'] ?? null) ? (array)$trafficVisits['totals'] : [];
+
+    // Ensure SEO traffic GA4 paths exist (Phase 3.2 requirement).
+    $trafficSeo = is_array($traffic['seo'] ?? null) ? (array)$traffic['seo'] : [];
+    $seoVisits = is_array($trafficSeo['visits'] ?? null) ? (array)$trafficSeo['visits'] : [];
+    if (!isset($seoVisits['timeseries']) || !is_array($seoVisits['timeseries'])) {
+        $seoVisits['timeseries'] = $trafficVisitsTs ?: ['labels' => [], 'this' => [], 'last' => []];
+    }
+    if (!isset($seoVisits['totals']) || !is_array($seoVisits['totals'])) {
+        $seoVisits['totals'] = $trafficVisitsTotals;
+    }
+    $trafficSeo['visits'] = $seoVisits;
+    $traffic['seo'] = $trafficSeo;
+    $reportData['sections']['traffic'] = $traffic;
 
     // Ensure all_visitors_report exists (used by report_ui.js tables/donuts).
     if (!isset($reportData['sections']['all_visitors_report']) || !is_array($reportData['sections']['all_visitors_report'])) {
@@ -289,6 +303,67 @@ function normalize_report_contract(array $snapshot, array $row): array
         ],
     ];
 
+    $enforceTrafficSegments = function (array $in): array {
+        $in['sections'] = is_array($in['sections'] ?? null) ? (array)$in['sections'] : [];
+        $in['sections']['traffic'] = is_array($in['sections']['traffic'] ?? null) ? (array)$in['sections']['traffic'] : [];
+
+        $ensureTimeseries = function (mixed $ts): array {
+            $arr = is_array($ts) ? (array)$ts : [];
+            return [
+                'labels' => is_array($arr['labels'] ?? null) ? array_values((array)$arr['labels']) : [],
+                'this' => is_array($arr['this'] ?? null) ? array_values((array)$arr['this']) : [],
+                'last' => is_array($arr['last'] ?? null) ? array_values((array)$arr['last']) : [],
+            ];
+        };
+
+        $ensureSegment = function (mixed $seg) use ($ensureTimeseries): array {
+            $s = is_array($seg) ? (array)$seg : [];
+            $visits = is_array($s['visits'] ?? null) ? (array)$s['visits'] : [];
+            $behavior = is_array($s['behavior'] ?? null) ? (array)$s['behavior'] : [];
+            $sales = is_array($s['sales'] ?? null) ? (array)$s['sales'] : [];
+            $goals = is_array($s['goals'] ?? null) ? (array)$s['goals'] : [];
+
+            $visits['timeseries'] = $ensureTimeseries($visits['timeseries'] ?? null);
+            $visits['totals'] = is_array($visits['totals'] ?? null) ? (array)$visits['totals'] : [];
+            $behavior['timeseries'] = $ensureTimeseries($behavior['timeseries'] ?? null);
+            $behavior['totals'] = is_array($behavior['totals'] ?? null) ? (array)$behavior['totals'] : [];
+            $sales['timeseries'] = $ensureTimeseries($sales['timeseries'] ?? null);
+            $sales['totals'] = is_array($sales['totals'] ?? null) ? (array)$sales['totals'] : [];
+            $goals['timeseries'] = $ensureTimeseries($goals['timeseries'] ?? null);
+            $goals['totals'] = is_array($goals['totals'] ?? null) ? (array)$goals['totals'] : [];
+
+            $s['visits'] = $visits;
+            $s['behavior'] = $behavior;
+            $s['sales'] = $sales;
+            $s['goals'] = $goals;
+            return $s;
+        };
+
+        $t = (array)$in['sections']['traffic'];
+        $t['all'] = $ensureSegment($t['all'] ?? null);
+        $in['sections']['traffic'] = $t;
+
+        // TEMP: SEO GA4 is a clone of "all" until filtering is implemented.
+        $in['sections']['traffic']['seo'] = $in['sections']['traffic']['all'];
+
+        // Enforce Phase 3.2 segment-ready shape.
+        $pickOrAll = function (string $key) use ($in, $ensureSegment): array {
+            $t2 = is_array($in['sections']['traffic'] ?? null) ? (array)$in['sections']['traffic'] : [];
+            if (isset($t2[$key]) && is_array($t2[$key])) {
+                return $ensureSegment($t2[$key]);
+            }
+            return $ensureSegment($t2['all'] ?? null);
+        };
+
+        $in['sections']['traffic']['ppc'] = $pickOrAll('paid_search');
+        $in['sections']['traffic']['social_organic'] = $pickOrAll('social');
+        $in['sections']['traffic']['social_paid'] = $pickOrAll('paid_social');
+        $in['sections']['traffic']['referral'] = $pickOrAll('referral');
+        $in['sections']['traffic']['email'] = $pickOrAll('email');
+
+        return $in;
+    };
+
     // If already in the contract shape, trust it (but ensure required keys exist).
     if (isset($snapshot['sections']) && is_array($snapshot['sections']) && isset($snapshot['sections']['traffic']) && is_array($snapshot['sections']['traffic'])) {
         $base['meta'] = is_array($snapshot['meta'] ?? null) ? (array)$snapshot['meta'] + $base['meta'] : $base['meta'];
@@ -297,7 +372,7 @@ function normalize_report_contract(array $snapshot, array $row): array
         // Preserve any additional section payloads (e.g. Phase 3 "all visitors report" extras).
         $base['sections'] = (array)$snapshot['sections'] + $base['sections'];
         $base['sections']['traffic'] = (array)$snapshot['sections']['traffic'];
-        return $base;
+        return $enforceTrafficSegments($base);
     }
 
     // Legacy snapshot shape (pre-Phase-3.1): top-level keys like "visits", "behavior", "sales", "goals", "demographics", "gsc".
@@ -412,7 +487,7 @@ function normalize_report_contract(array $snapshot, array $row): array
             ];
         }
 
-        return $base;
+        return $enforceTrafficSegments($base);
     }
 
     // Backward compatibility: map older Phase 3 snapshot keys (visitors/behavior/sales/goals) into the new contract (preset=all only).
@@ -465,7 +540,7 @@ function normalize_report_contract(array $snapshot, array $row): array
     $base['sections']['traffic'] = [
         'all' => $trafficAll,
     ];
-    return $base;
+    return $enforceTrafficSegments($base);
 }
 
 $reportId = safe_int($_GET['id'] ?? null, 0);
