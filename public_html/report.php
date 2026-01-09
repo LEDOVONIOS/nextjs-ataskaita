@@ -807,26 +807,6 @@ $reportData['meta']['active_view'] = $view;
 $reportData['meta']['active_segment_key'] = $activeSegmentKey;
 $reportData['meta']['active_segment_label'] = $activeSegmentLabel;
 
-// STEP 4: Temporary DEBUG block (ADMIN only).
-if ($role === 'ADMIN') {
-    $keys = array_keys($reportData);
-    $usersSample = null;
-    if (isset($reportData['sections']['all_visitors_report']['visits']['totals']['users'])) {
-        $usersSample = $reportData['sections']['all_visitors_report']['visits']['totals']['users'];
-    }
-    $gscClicksThis = null;
-    if (isset($reportData['sections']['seo_report']['gsc']['clicks']['this'])) {
-        $gscClicksThis = $reportData['sections']['seo_report']['gsc']['clicks']['this'];
-    }
-    echo '<div class="card">';
-    echo '<div class="card__title">DEBUG (admin only)</div>';
-    echo '<div class="muted">jsonLen: <strong>' . e((string)$dataJsonLen) . '</strong></div>';
-    echo '<div class="muted">REPORT_DATA keys: <code>' . e(implode(', ', $keys)) . '</code></div>';
-    echo '<div class="muted">Sample: sections.all_visitors_report.visits.totals.users = <code>' . e(var_export($usersSample, true)) . '</code></div>';
-    echo '<div class="muted">Sample: sections.seo_report.gsc.clicks.this = <code>' . e(var_export($gscClicksThis, true)) . '</code></div>';
-    echo '</div>';
-}
-
 // Note saving is handled via /note.php (AJAX + CSRF), scoped per project/month.
 ?>
 
