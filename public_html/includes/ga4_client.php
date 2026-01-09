@@ -135,6 +135,15 @@ function ga4_build_client(array $context = []): array
             'scopes' => $scopes,
         ]);
 
+        // Safe-to-log identifiers (never log private_key).
+        log_info('GA4 client build: credential identifiers', [
+            'client_email' => (isset($creds['client_email']) && is_string($creds['client_email'])) ? trim($creds['client_email']) : null,
+            'project_id' => (isset($creds['project_id']) && is_string($creds['project_id'])) ? trim($creds['project_id']) : null,
+            'private_key_id' => (isset($creds['private_key_id']) && is_string($creds['private_key_id'])) ? trim($creds['private_key_id']) : null,
+            'token_uri' => (isset($creds['token_uri']) && is_string($creds['token_uri'])) ? trim($creds['token_uri']) : null,
+            'universe_domain' => (isset($creds['universe_domain']) && is_string($creds['universe_domain'])) ? trim($creds['universe_domain']) : null,
+        ]);
+
         // Strict private_key integrity check (never log the key; only booleans).
         $privateKey = (isset($creds['private_key']) && is_string($creds['private_key'])) ? $creds['private_key'] : '';
         $privateKeyHasPemMarkers = ($privateKey !== '')
@@ -197,6 +206,41 @@ function ga4_build_client(array $context = []): array
         $normalizationPossible = ($privateKeyHasEscapedNewlines && !$privateKeyHasRealNewlines);
         $normalized = false;
 
+        // OpenSSL sanity check: validate the PEM can be parsed (never log key material).
+        $pkey = @openssl_pkey_get_private((string)($creds['private_key'] ?? ''));
+        if ($pkey === false && $normalizationPossible && !$normalized) {
+            $creds['private_key'] = str_replace("\\n", "\n", (string)$creds['private_key']);
+            $normalized = true;
+            $pkey = @openssl_pkey_get_private((string)($creds['private_key'] ?? ''));
+        }
+
+        $opensslParsed = ($pkey !== false);
+        $opensslType = null;
+        $opensslBits = null;
+        if ($opensslParsed) {
+            $details = @openssl_pkey_get_details($pkey);
+            if (is_array($details)) {
+                $opensslType = $details['type'] ?? null;
+                $opensslBits = $details['bits'] ?? null;
+            }
+            if (function_exists('openssl_pkey_free')) {
+                @openssl_pkey_free($pkey);
+            }
+        }
+        log_info('GA4 client build: openssl private key parsed', [
+            'openssl_private_key_parsed' => $opensslParsed,
+            'openssl_key_type' => $opensslType,
+            'openssl_key_bits' => $opensslBits,
+        ]);
+        if (!$opensslParsed) {
+            $cached = ['ok' => false, 'error' => 'Service account private_key could not be parsed by OpenSSL'];
+            log_error('GA4 client init failed: openssl_pkey_get_private failed', [
+                'client_email' => (isset($creds['client_email']) && is_string($creds['client_email'])) ? trim($creds['client_email']) : null,
+                'private_key_id' => (isset($creds['private_key_id']) && is_string($creds['private_key_id'])) ? trim($creds['private_key_id']) : null,
+            ]);
+            return $cached;
+        }
+
         // Build a credentials *object* (decoded array may be ignored by some versions).
         $sa = new \Google\Auth\Credentials\ServiceAccountCredentials($scopes, $creds);
 
@@ -209,6 +253,58 @@ function ga4_build_client(array $context = []): array
             }
             $token = $sa->fetchAuthToken($httpHandler);
         } catch (Throwable $e) {
+            $extractOauthError = static function (Throwable $t): array {
+                $msg = (string)$t->getMessage();
+                $payloads = [$msg];
+                $prev = $t->getPrevious();
+                while ($prev instanceof Throwable) {
+                    $payloads[] = (string)$prev->getMessage();
+                    $prev = $prev->getPrevious();
+                }
+
+                foreach ($payloads as $s) {
+                    $decoded = null;
+                    $tmp = json_decode($s, true);
+                    if (is_array($tmp)) {
+                        $decoded = $tmp;
+                    } else {
+                        if (preg_match('/(\{.*\})/s', $s, $m) === 1) {
+                            $tmp2 = json_decode($m[1], true);
+                            if (is_array($tmp2)) {
+                                $decoded = $tmp2;
+                            }
+                        }
+                    }
+
+                    if (!is_array($decoded)) {
+                        continue;
+                    }
+
+                    // OAuth token endpoint error schema:
+                    // { "error": "invalid_grant", "error_description": "..." }
+                    if (isset($decoded['error']) && is_string($decoded['error'])) {
+                        return [
+                            'oauth_error_code' => $decoded['error'],
+                            'oauth_error_description' => (isset($decoded['error_description']) && is_string($decoded['error_description']))
+                                ? $decoded['error_description']
+                                : null,
+                        ];
+                    }
+
+                    // Some clients may wrap errors.
+                    if (isset($decoded['error']) && is_array($decoded['error'])) {
+                        $inner = $decoded['error'];
+                        $code = (isset($inner['status']) && is_string($inner['status'])) ? $inner['status'] : null;
+                        $desc = (isset($inner['message']) && is_string($inner['message'])) ? $inner['message'] : null;
+                        if ($code !== null || $desc !== null) {
+                            return ['oauth_error_code' => $code, 'oauth_error_description' => $desc];
+                        }
+                    }
+                }
+
+                return ['oauth_error_code' => null, 'oauth_error_description' => null];
+            };
+
             // One retry if the private_key looks like it has escaped newlines (\\n) instead of real newlines.
             if ($normalizationPossible && !$normalized) {
                 $creds['private_key'] = str_replace("\\n", "\n", (string)$creds['private_key']);
@@ -231,17 +327,27 @@ function ga4_build_client(array $context = []): array
                     $token = $sa->fetchAuthToken($httpHandler);
                 } catch (Throwable $e2) {
                     $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed'];
+                    $oauth = $extractOauthError($e2);
                     log_error('GA4 client init failed: token preflight exception', [
                         'keyPath' => $keyPath,
                         'error' => $e2->getMessage(),
+                        'oauth_error_code' => $oauth['oauth_error_code'],
+                        'oauth_error_description' => $oauth['oauth_error_description'],
+                        'client_email' => (isset($creds['client_email']) && is_string($creds['client_email'])) ? trim($creds['client_email']) : null,
+                        'private_key_id' => (isset($creds['private_key_id']) && is_string($creds['private_key_id'])) ? trim($creds['private_key_id']) : null,
                     ]);
                     return $cached;
                 }
             } else {
             $cached = ['ok' => false, 'error' => 'GA4 service account token preflight failed'];
+            $oauth = $extractOauthError($e);
             log_error('GA4 client init failed: token preflight exception', [
                 'keyPath' => $keyPath,
                 'error' => $e->getMessage(),
+                'oauth_error_code' => $oauth['oauth_error_code'],
+                'oauth_error_description' => $oauth['oauth_error_description'],
+                'client_email' => (isset($creds['client_email']) && is_string($creds['client_email'])) ? trim($creds['client_email']) : null,
+                'private_key_id' => (isset($creds['private_key_id']) && is_string($creds['private_key_id'])) ? trim($creds['private_key_id']) : null,
             ]);
             return $cached;
             }
