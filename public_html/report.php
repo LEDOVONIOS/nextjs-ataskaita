@@ -1195,6 +1195,11 @@ window.REPORT_DATA = <?php echo json_encode(
     $reportData,
     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
 ); ?>;
+// Compatibility alias (case-sensitive globals):
+// - Some UI builds read window.REPORT_DATA, others read window.Report_DATA.
+// Ensure both point to the same object.
+if (window.REPORT_DATA && !window.Report_DATA) window.Report_DATA = window.REPORT_DATA;
+if (window.Report_DATA && !window.REPORT_DATA) window.REPORT_DATA = window.Report_DATA;
 </script>
 <script>
 // STEP 3: For now, always render the All Visitors report on this page.

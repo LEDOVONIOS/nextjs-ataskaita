@@ -11,40 +11,45 @@
   }
 
   onReady(function initReportUI() {
-    // STEP 1 — Confirm JS loads & runs
-    // eslint-disable-next-line no-console
-    console.log('report_ui.js loaded', window.REPORT_DATA?.sections && Object.keys(window.REPORT_DATA.sections));
+    var ROOT = window.REPORT_DATA || window.Report_DATA;
+    if (!ROOT || !ROOT.sections) {
+      // eslint-disable-next-line no-console
+      console.warn('No REPORT_DATA');
+      return;
+    }
 
-    var data = window.REPORT_DATA || {};
+    // eslint-disable-next-line no-console
+    console.log('report_ui.js loaded', Object.keys(ROOT.sections || {}));
+
+    var data = ROOT;
     var meta = data.meta || {};
     var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
     var project = data.project || {};
     var showSales = !!project.show_sales_section;
     var charts = Object.create(null);
 
-    // Prefer explicit wiring from report.php (STEP 3).
-    // If missing, derive a reasonable default based on view.
-    (function ensureActiveReportKey() {
-      if (window.ACTIVE_REPORT_KEY) return;
+    function activeViewFromMetaOrUrl() {
       var view = (meta && meta.active_view) ? String(meta.active_view) : '';
-      if (!view) {
-        try {
-          view = String((new URLSearchParams(window.location.search)).get('view') || '');
-        } catch (e) {
-          view = '';
-        }
+      if (view) return view;
+      try {
+        return String((new URLSearchParams(window.location.search)).get('view') || '');
+      } catch (e) {
+        return '';
       }
+    }
+
+    function resolveActiveKey() {
+      var view = activeViewFromMetaOrUrl();
       var key = 'all_visitors_report';
       if (view === 'seo') key = 'seo_report';
       else if (view === 'ppc') key = 'ppc_report';
-      else if (view && view !== 'all') {
-        var secs = (data && data.sections) ? data.sections : {};
-        if (secs && secs[view]) key = view;
-        else if (secs && secs[view + '_report']) key = view + '_report';
-        else key = view;
-      }
-      window.ACTIVE_REPORT_KEY = key;
-    })();
+      else if (!view || view === 'all') key = 'all_visitors_report';
+      else key = view; // segment / custom view key
+      return key;
+    }
+
+    // Always reconcile active key (report.php may set a default).
+    window.ACTIVE_REPORT_KEY = resolveActiveKey();
 
     var isSegmentView = !!(window.ACTIVE_REPORT_KEY && window.ACTIVE_REPORT_KEY !== 'all_visitors_report' && window.ACTIVE_REPORT_KEY !== 'seo_report' && window.ACTIVE_REPORT_KEY !== 'ppc_report');
 
@@ -147,6 +152,10 @@
 
   function appendPlaceholderToSection(sectionId, message) {
     var sec = sectionId ? document.getElementById(sectionId) : null;
+    try {
+      // eslint-disable-next-line no-console
+      console.warn('[report_ui] ' + String(message || 'UI placeholder'));
+    } catch (e) {}
     if (!sec) return;
     // Avoid duplicating placeholders.
     if (sec.querySelector && sec.querySelector('[data-report-ui-placeholder="1"]')) return;
@@ -170,19 +179,61 @@
   }
 
   var didWarnMissingActiveReport = false;
+  function getSectionByKeyOrSegment(key) {
+    var secs = (ROOT && ROOT.sections) ? ROOT.sections : {};
+    if (!secs) return null;
+    if (key && secs[key]) return secs[key];
+
+    // Segment reports can be nested: sections.segment_reports[<segmentKey>]
+    var segs = secs.segment_reports;
+    if (segs && typeof segs === 'object') {
+      if (key && segs[key]) return segs[key];
+      var segKey = (meta && meta.active_segment_key) ? String(meta.active_segment_key) : '';
+      if (segKey && segs[segKey]) return segs[segKey];
+
+      var view = activeViewFromMetaOrUrl();
+      if (view && segs[view]) return segs[view];
+    }
+
+    // Fallback: some snapshots may store segment report directly under a derived key.
+    var view2 = activeViewFromMetaOrUrl();
+    if (view2 && secs[view2 + '_report']) return secs[view2 + '_report'];
+
+    return null;
+  }
+
   function getActiveReport() {
-    var root = window.REPORT_DATA || {};
     var key = window.ACTIVE_REPORT_KEY || 'all_visitors_report';
     // STEP 3 — Active report key wiring
-    var out = (root.sections && root.sections[key]) ? root.sections[key] : null;
+    var out = getSectionByKeyOrSegment(key);
     if (!out && !didWarnMissingActiveReport) {
       didWarnMissingActiveReport = true;
       try {
         // eslint-disable-next-line no-console
-        console.warn('[report_ui] Active report missing:', key, 'available:', Object.keys((window.REPORT_DATA && window.REPORT_DATA.sections) || {}));
+        console.warn('[report_ui] Active report missing:', key, 'available:', Object.keys((ROOT && ROOT.sections) || {}));
       } catch (e) {}
     }
     return out;
+  }
+
+  // Minimal smoke render: prove wiring by showing Users total (e.g. 30329)
+  function smokeRenderUsersTotal() {
+    var R = getActiveReport();
+    if (!R || !R.visits || !R.visits.totals) return;
+    var users = R.visits.totals.users;
+    if (users == null) return;
+
+    if (!elVisitsTable) {
+      appendPlaceholderToSection('visits', 'Missing container: #table-visits (smoke render users=' + String(users) + ')');
+      return;
+    }
+
+    // Only write the minimal table if the container is currently empty.
+    if (String(elVisitsTable.textContent || '').trim() !== '') return;
+
+    elVisitsTable.innerHTML =
+      '<thead><tr><th>Users</th><th class="right">Value</th></tr></thead>' +
+      '<tbody><tr><td><strong>Users</strong></td><td class="right">' + esc(fmtNumber(users, 0)) + '</td></tr></tbody>';
   }
 
   function sourceLabel(key, fallback) {
@@ -1205,6 +1256,7 @@
   }
 
   // Render everything
+  smokeRenderUsersTotal();
   buildVisitsTable();
   buildBehaviorTable();
   buildSalesTable();
