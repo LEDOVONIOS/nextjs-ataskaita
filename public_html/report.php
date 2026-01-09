@@ -1206,7 +1206,7 @@ if (window.Report_DATA && !window.REPORT_DATA) window.REPORT_DATA = window.Repor
 // (Later this will be wired to sidebar interactions.)
 window.ACTIVE_REPORT_KEY = "all_visitors_report";
 </script>
-<script src="<?php echo e(url('/assets/js/report_ui.js')); ?>"></script>
+<script src="/assets/js/report_ui.js?v=<?= (int)@filemtime(__DIR__ . '/assets/js/report_ui.js') ?>"></script>
 
 <?php
 render_footer();
