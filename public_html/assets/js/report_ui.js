@@ -42,8 +42,50 @@
     var ranges = (data.period && data.period.date_ranges) ? data.period.date_ranges : {};
     var project = data.project || {};
     var showSales = !!project.show_sales_section;
+    var REPORT_NOTES = (window.REPORT_NOTES && typeof window.REPORT_NOTES === 'object') ? window.REPORT_NOTES : {};
+    var USER_ROLE = String(window.CURRENT_USER_ROLE || '');
+    var CAN_EDIT_REPORT_NOTES = (USER_ROLE === 'ADMIN' || USER_ROLE === 'SPECIALIST');
     var charts = Object.create(null);
     var DEFAULT_EXCLUDED_EVENTS = ['scroll', 'first_visit', 'session_start', 'page_view', 'user_engagement'];
+
+    function reportNoteScopeForView(view) {
+      if (!view || view === 'all') return 'all_visitors';
+      if (view === 'seo') return 'seo';
+      if (view === 'ppc') return 'ppc';
+      if (view === 'organic_social') return 'social_organic';
+      if (view === 'paid_social') return 'social_paid';
+      if (view === 'referral') return 'referral';
+      if (view === 'email') return 'email';
+      return 'all_visitors';
+    }
+
+    function reportNoteText(scope) {
+      if (!REPORT_NOTES || typeof REPORT_NOTES !== 'object') return '';
+      if (!Object.prototype.hasOwnProperty.call(REPORT_NOTES, String(scope))) return '';
+      return String(REPORT_NOTES[String(scope)] == null ? '' : REPORT_NOTES[String(scope)]);
+    }
+
+    function reportNoteIsNonEmpty(scope) {
+      return reportNoteText(scope).trim() !== '';
+    }
+
+    function requiredScopesForReady() {
+      var req = ['all_visitors', 'seo'];
+      if (ROOT && ROOT.sections && ROOT.sections.ppc_report) req.push('ppc');
+      if (ROOT && ROOT.sections && ROOT.sections.traffic && ROOT.sections.traffic.social_organic) req.push('social_organic');
+      return req;
+    }
+
+    function updateReadyStateBanner() {
+      var el = document.getElementById('reportReadyState');
+      if (!el) return;
+      var req = requiredScopesForReady();
+      var ok = true;
+      for (var i = 0; i < req.length; i++) {
+        if (!reportNoteIsNonEmpty(req[i])) { ok = false; break; }
+      }
+      el.textContent = ok ? '✅ Ataskaita paruošta siuntimui' : '🕒 Ataskaita ruošiama';
+    }
 
     function activeViewFromMetaOrUrl() {
       var view = (meta && meta.active_view) ? String(meta.active_view) : '';
@@ -1649,83 +1691,220 @@
     return out.join('&');
   }
 
-  var didInitSeoNote = false;
-  var didLoadSeoNoteOnce = false;
+  function setInlineStatus(el, msg, isError) {
+    if (!el) return;
+    el.textContent = String(msg || '');
+    try { el.style.color = isError ? '#fb7185' : ''; } catch (e) {}
+  }
 
-  function seoNoteContext() {
+  function renderNoteReadOnly(el, text) {
+    if (!el) return;
+    var t = String(text == null ? '' : text).trim();
+    if (!t) {
+      el.innerHTML = '<span class="muted">—</span>';
+      return;
+    }
+    el.innerHTML = esc(t).replace(/\n/g, '<br>');
+  }
+
+  function saveReportNote(scope, text, statusEl, btnEl) {
     var pid = Number(project && project.id != null ? project.id : 0);
     var year = Number((data.period && data.period.year != null) ? data.period.year : 0);
     var month = Number((data.period && data.period.month != null) ? data.period.month : 0);
-    return { project_id: pid, year: year, month: month, scope: 'seo_work_summary' };
-  }
-
-  function setSeoNoteStatus(msg, isError) {
-    var el = document.getElementById('seo-work-save-status');
-    if (!el) return;
-    el.textContent = String(msg || '');
-    try {
-      el.style.color = isError ? '#fb7185' : '';
-    } catch (e) {}
-  }
-
-  function loadSeoWorkSummary() {
-    var ta = document.getElementById('seo_work_summary');
-    if (!ta) return;
-    var ctx = seoNoteContext();
-    if (!ctx.project_id || !ctx.year || !ctx.month) return;
-
-    setSeoNoteStatus('Kraunama…', false);
-    fetch('/note.php?' + qs(ctx), { credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
-      .then(function (json) {
-        if (!json || !json.ok) throw new Error((json && json.error) ? String(json.error) : 'Load failed');
-        ta.value = String(json.note_text != null ? json.note_text : '');
-        setSeoNoteStatus('', false);
-        didLoadSeoNoteOnce = true;
-      })
-      .catch(function () {
-        setSeoNoteStatus('Nepavyko užkrauti pastabos.', true);
-      });
-  }
-
-  function saveSeoWorkSummary() {
-    var btn = document.getElementById('btn-seo-work-save');
-    var ta = document.getElementById('seo_work_summary');
-    if (!btn || !ta) return;
-    var ctx = seoNoteContext();
-    if (!ctx.project_id || !ctx.year || !ctx.month) return;
+    if (!pid || !year || !month || !scope) {
+      setInlineStatus(statusEl, 'Nepavyko išsaugoti.', true);
+      return;
+    }
 
     var fd = new FormData();
     fd.append('csrf_token', String(window.CSRF_TOKEN || ''));
-    fd.append('project_id', String(ctx.project_id));
-    fd.append('year', String(ctx.year));
-    fd.append('month', String(ctx.month));
-    fd.append('scope', String(ctx.scope));
-    fd.append('note_text', String(ta.value || ''));
+    fd.append('project_id', String(pid));
+    fd.append('year', String(year));
+    fd.append('month', String(month));
+    fd.append('scope', String(scope));
+    fd.append('content', String(text || ''));
 
-    btn.disabled = true;
-    setSeoNoteStatus('Saugoma…', false);
+    if (btnEl) btnEl.disabled = true;
+    setInlineStatus(statusEl, 'Saugoma…', false);
 
-    fetch('/note.php', { method: 'POST', body: fd, credentials: 'same-origin' })
+    fetch('/save_report_note.php', { method: 'POST', body: fd, credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (!json || !json.ok) throw new Error((json && json.error) ? String(json.error) : 'Save failed');
-        setSeoNoteStatus('Išsaugota.', false);
-        setTimeout(function () { setSeoNoteStatus('', false); }, 1200);
+        REPORT_NOTES[String(scope)] = String(text || '');
+        window.REPORT_NOTES = REPORT_NOTES;
+        updateReadyStateBanner();
+        setInlineStatus(statusEl, 'Išsaugota.', false);
+        setTimeout(function () { setInlineStatus(statusEl, '', false); }, 1200);
       })
       .catch(function () {
-        setSeoNoteStatus('Nepavyko išsaugoti.', true);
+        setInlineStatus(statusEl, 'Nepavyko išsaugoti.', true);
       })
-      .finally(function () { btn.disabled = false; });
+      .finally(function () {
+        if (btnEl) btnEl.disabled = false;
+      });
   }
 
-  function setupSeoWorkSummaryUI() {
-    if (didInitSeoNote) return;
-    var btn = document.getElementById('btn-seo-work-save');
-    var ta = document.getElementById('seo_work_summary');
-    if (!btn || !ta) return;
-    didInitSeoNote = true;
-    btn.addEventListener('click', saveSeoWorkSummary);
+  function visibleViewContainer(view) {
+    var nodes = document.querySelectorAll('.report3__view[data-view="' + String(view) + '"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el) continue;
+      if (!el.style) return el;
+      if (String(el.style.display || '') !== 'none') return el;
+    }
+    return nodes && nodes[0] ? nodes[0] : null;
+  }
+
+  function ensureTopNotesSection() {
+    var container = visibleViewContainer('all');
+    if (!container) return null;
+    var existing = container.querySelector('[data-report-notes-top="1"]');
+    if (existing) return existing;
+
+    var sec = document.createElement('section');
+    sec.className = 'report3__section report-section';
+    sec.id = 'report-notes-top';
+    sec.setAttribute('data-report-notes-top', '1');
+    sec.setAttribute('data-scope', 'all_visitors');
+
+    var card = document.createElement('div');
+    card.className = 'card';
+    sec.appendChild(card);
+
+    var head = document.createElement('div');
+    head.className = 'report3__sectionHead';
+    head.innerHTML =
+      '<div class="report3__sectionTitle">Darbų apžvalga / Pastabos</div>' +
+      '<div class="report3__sectionRange">' + esc(String((ranges.this_start || '') + ' – ' + (ranges.this_end || ''))) + '</div>';
+    card.appendChild(head);
+
+    var editorRow = document.createElement('div');
+    editorRow.className = 'form-row';
+    editorRow.innerHTML = '<textarea class="report3__textarea" rows="8"></textarea>';
+    card.appendChild(editorRow);
+
+    var actions = document.createElement('div');
+    actions.className = 'card__actions';
+    actions.innerHTML = '<button class="btn btn--primary" type="button">Išsaugoti</button> <span class="muted report3__inlineNote" aria-live="polite"></span>';
+    card.appendChild(actions);
+
+    var ro = document.createElement('div');
+    ro.className = 'report3__notesRead';
+    ro.style.display = 'none';
+    card.appendChild(ro);
+
+    container.insertBefore(sec, container.firstChild);
+    return sec;
+  }
+
+  function updateTopNotesForView(view) {
+    var sec = ensureTopNotesSection();
+    if (!sec) return;
+    var scope = reportNoteScopeForView(view);
+    sec.setAttribute('data-scope', scope);
+
+    var ta = sec.querySelector('textarea');
+    var btn = sec.querySelector('button');
+    var statusEl = sec.querySelector('.report3__inlineNote');
+    var ro = sec.querySelector('.report3__notesRead');
+    var actions = btn ? btn.closest('.card__actions') : null;
+
+    var text = reportNoteText(scope);
+    if (CAN_EDIT_REPORT_NOTES) {
+      if (ta) { ta.value = String(text || ''); ta.style.display = ''; }
+      if (actions) actions.style.display = '';
+      if (ro) ro.style.display = 'none';
+      if (btn && !btn.__boundReportNoteSave) {
+        btn.__boundReportNoteSave = true;
+        btn.addEventListener('click', function () {
+          var s = String(sec.getAttribute('data-scope') || '');
+          saveReportNote(s, ta ? ta.value : '', statusEl, btn);
+        });
+      }
+    } else {
+      if (ta) ta.style.display = 'none';
+      if (actions) actions.style.display = 'none';
+      if (ro) { ro.style.display = ''; renderNoteReadOnly(ro, text); }
+    }
+  }
+
+  function updateSeoWorkSection() {
+    var container = visibleViewContainer('seo');
+    if (!container) return;
+    var sec = container.querySelector('#seo-work');
+    if (!sec) return;
+
+    var ta = sec.querySelector('#seo_work_summary');
+    var btn = sec.querySelector('#btn-seo-work-save');
+    var statusEl = sec.querySelector('#seo-work-save-status');
+    var actions = btn ? btn.closest('.card__actions') : null;
+    var ro = sec.querySelector('[data-report-note-read="seo"]');
+    if (!ro) {
+      ro = document.createElement('div');
+      ro.className = 'report3__notesRead';
+      ro.setAttribute('data-report-note-read', 'seo');
+      var card = sec.querySelector('.card') || sec;
+      card.appendChild(ro);
+    }
+
+    var text = reportNoteText('seo');
+    if (CAN_EDIT_REPORT_NOTES) {
+      if (ta) { ta.value = String(text || ''); ta.style.display = ''; }
+      if (actions) actions.style.display = '';
+      if (ro) ro.style.display = 'none';
+      if (btn && !btn.__boundReportNoteSave) {
+        btn.__boundReportNoteSave = true;
+        btn.addEventListener('click', function () {
+          saveReportNote('seo', ta ? ta.value : '', statusEl, btn);
+        });
+      }
+    } else {
+      if (ta) ta.style.display = 'none';
+      if (actions) actions.style.display = 'none';
+      if (ro) { ro.style.display = ''; renderNoteReadOnly(ro, text); }
+    }
+  }
+
+  function updatePpcWorkSection() {
+    var container = visibleViewContainer('ppc');
+    if (!container) return;
+    var sec = container.querySelector('#ppc-work');
+    if (!sec) return;
+
+    var ta = sec.querySelector('#ppc_work_summary');
+    var btn = sec.querySelector('#btn-ppc-work-save');
+    var statusEl = sec.querySelector('#ppc-work-save-status');
+    var editorRow = sec.querySelector('#ppc_note_editor');
+    var actions = sec.querySelector('#ppc_note_actions');
+    var ro = sec.querySelector('#ppc_work_summary_read');
+
+    var text = reportNoteText('ppc');
+    if (CAN_EDIT_REPORT_NOTES) {
+      if (ta) ta.value = String(text || '');
+      if (editorRow) editorRow.style.display = '';
+      if (actions) actions.style.display = '';
+      if (ro) ro.style.display = 'none';
+      if (btn && !btn.__boundReportNoteSave) {
+        btn.__boundReportNoteSave = true;
+        btn.addEventListener('click', function () {
+          saveReportNote('ppc', ta ? ta.value : '', statusEl, btn);
+        });
+      }
+    } else {
+      if (editorRow) editorRow.style.display = 'none';
+      if (actions) actions.style.display = 'none';
+      if (ro) { ro.style.display = ''; renderNoteReadOnly(ro, text); }
+    }
+  }
+
+  function updateNotesUIForView(view) {
+    // Only show the injected top notes section for views that render in the "all" container.
+    if (containerViewForView(view) === 'all') {
+      updateTopNotesForView(view);
+    }
+    if (String(view) === 'seo') updateSeoWorkSection();
+    if (String(view) === 'ppc') updatePpcWorkSection();
   }
 
   function setSidebarActive(view) {
@@ -1838,8 +2017,7 @@
       if (showSales) buildSeoSalesTable();
       buildSeoGoalsTable();
       renderSeoCharts();
-      setupSeoWorkSummaryUI();
-      if (!didLoadSeoNoteOnce) loadSeoWorkSummary();
+      updateSeoWorkSection();
       return;
     }
     if (key === 'ppc_report') {
@@ -1851,6 +2029,7 @@
       buildPpcSalesTable();
       buildPpcGoalsTable();
       renderPpcLineChart();
+      updatePpcWorkSection();
       return;
     }
     // all_visitors_report or segment views
@@ -1890,6 +2069,8 @@
       updateQuickTabsForView(containerView);
       updateUrlViewParam(view);
       renderActiveView();
+      updateNotesUIForView(view);
+      updateReadyStateBanner();
       // Keep the scroll position sensible when switching.
       try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e2) { window.scrollTo(0, 0); }
     });
@@ -1920,10 +2101,8 @@
   toggleViews(initialView);
   setSidebarActiveAny(activeViewFromMetaOrUrl() || initialView);
   updateQuickTabsForView(initialView);
-  if (initialView === 'seo') {
-    setupSeoWorkSummaryUI();
-    loadSeoWorkSummary();
-  }
+  updateNotesUIForView(activeViewFromMetaOrUrl() || initialView);
+  updateReadyStateBanner();
 
   buildPpcVisitsTable();
   buildPpcCampaignsTable();
