@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/google_auth.php';
+require_once __DIR__ . '/ga4_requirements.php';
+require_once __DIR__ . '/ga4_client.php';
 
 /**
  * GA4 Data API schema compatibility helpers.
@@ -17,7 +19,7 @@ require_once __DIR__ . '/google_auth.php';
  */
 
 const GA4_METADATA_CACHE_TTL_SECONDS = 86400; // 24h
-const GA4_DATA_API_BASE_V1 = 'https://analyticsdata.googleapis.com/v1';
+const GA4_DATA_API_BASE_V1BETA = 'https://analyticsdata.googleapis.com/v1beta';
 
 // Keep scope definition local to avoid coupling to other modules.
 if (!defined('GA4_SCOPE_READONLY')) {
@@ -126,7 +128,7 @@ function ga4_write_cached_metadata(string $propertyId, array $metadata): void
 }
 
 /**
- * Fetches GA4 Data API metadata (v1) and caches it.
+ * Fetches GA4 Data API metadata (v1beta) and caches it.
  *
  * Returns:
  *  - ['ok'=>true, 'metadata'=>array, 'source'=>'cache'|'live']
@@ -144,6 +146,86 @@ function ga4_get_metadata(string $propertyId): array
         return ['ok' => true, 'metadata' => $cached, 'source' => 'cache'];
     }
 
+    // Preferred path: use the same authenticated GA4 library client as runReport (v1beta).
+    try {
+        if (function_exists('ga4_build_client') && ga4_requirements_ok(['component' => 'ga4_schema', 'kind' => 'metadata', 'property_id' => $pid])) {
+            $clientRes = ga4_build_client(['component' => 'ga4_schema', 'kind' => 'metadata', 'property_id' => $pid]);
+            if (($clientRes['ok'] ?? false) && ($clientRes['client'] ?? null) instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient) {
+                /** @var \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient $client */
+                $client = $clientRes['client'];
+                $name = 'properties/' . $pid . '/metadata';
+
+                $metaObj = null;
+                if (class_exists(\Google\Analytics\Data\V1beta\GetMetadataRequest::class)) {
+                    $metaObj = $client->getMetadata(new \Google\Analytics\Data\V1beta\GetMetadataRequest(['name' => $name]));
+                } else {
+                    // Some versions accept associative array requests.
+                    $metaObj = $client->getMetadata(['name' => $name]);
+                }
+
+                // Normalize protobuf Metadata into the JSON-ish array shape used elsewhere.
+                $dims = [];
+                $mets = [];
+                if (is_object($metaObj) && method_exists($metaObj, 'getDimensions')) {
+                    foreach ($metaObj->getDimensions() as $d) {
+                        if (!is_object($d) || !method_exists($d, 'getApiName')) {
+                            continue;
+                        }
+                        $deprecated = [];
+                        if (method_exists($d, 'getDeprecatedApiNames')) {
+                            foreach ($d->getDeprecatedApiNames() as $n) {
+                                if (is_string($n) && $n !== '') {
+                                    $deprecated[] = $n;
+                                }
+                            }
+                        }
+                        $dims[] = [
+                            'apiName' => (string)$d->getApiName(),
+                            'deprecatedApiNames' => $deprecated,
+                        ];
+                    }
+                }
+                if (is_object($metaObj) && method_exists($metaObj, 'getMetrics')) {
+                    foreach ($metaObj->getMetrics() as $m) {
+                        if (!is_object($m) || !method_exists($m, 'getApiName')) {
+                            continue;
+                        }
+                        $deprecated = [];
+                        if (method_exists($m, 'getDeprecatedApiNames')) {
+                            foreach ($m->getDeprecatedApiNames() as $n) {
+                                if (is_string($n) && $n !== '') {
+                                    $deprecated[] = $n;
+                                }
+                            }
+                        }
+                        $mets[] = [
+                            'apiName' => (string)$m->getApiName(),
+                            'deprecatedApiNames' => $deprecated,
+                        ];
+                    }
+                }
+                $meta = [
+                    'name' => $name,
+                    'dimensions' => $dims,
+                    'metrics' => $mets,
+                ];
+
+                ga4_write_cached_metadata($pid, $meta);
+                return ['ok' => true, 'metadata' => $meta, 'source' => 'live'];
+            }
+        }
+    } catch (Throwable $e) {
+        log_error('GA4 metadata fetch failed (client)', [
+            'propertyId' => $pid,
+            'endpoint' => 'getMetadata(properties/' . $pid . '/metadata)',
+            // Best-effort: ApiException code often matches HTTP status (e.g., 404).
+            'http' => (int)$e->getCode(),
+            'error' => $e->getMessage(),
+        ]);
+        // Continue to legacy HTTP fallback below.
+    }
+
+    // Legacy fallback: direct HTTP call (still v1beta). Keep for resilience.
     $tok = get_google_access_token(GA4_SCOPE_READONLY);
     if (!($tok['ok'] ?? false)) {
         return ['ok' => false, 'error' => 'Failed to get Google access token for GA4 metadata'];
@@ -153,7 +235,7 @@ function ga4_get_metadata(string $propertyId): array
         return ['ok' => false, 'error' => 'Access token missing for GA4 metadata'];
     }
 
-    $url = GA4_DATA_API_BASE_V1 . '/properties/' . rawurlencode($pid) . '/metadata';
+    $url = GA4_DATA_API_BASE_V1BETA . '/properties/' . rawurlencode($pid) . '/metadata';
     $resp = ga4_http_get($url, $accessToken);
     if (!($resp['ok'] ?? false)) {
         log_error('GA4 metadata request failed', [
@@ -248,10 +330,9 @@ function ga4_map_and_validate_fields(string $propertyId, array $metrics, array $
         'purchases' => 'transactions',
     ];
     $dimensionMap = [
-        // "sessionChannelGroup" is not a valid GA4 Data API dimension; use defaultChannelGroup.
-        'sessionChannelGroup' => 'defaultChannelGroup',
-        // Prefer v1 schema default channel group where available.
-        'sessionDefaultChannelGroup' => 'defaultChannelGroup',
+        // v1 (deprecated/invalid) -> v1beta:
+        // defaultChannelGroup is incompatible with several metrics; prefer sessionDefaultChannelGroup.
+        'defaultChannelGroup' => 'sessionDefaultChannelGroup',
     ];
 
     $metaRes = ga4_get_metadata($propertyId);
