@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/ga4_requirements.php';
+require_once __DIR__ . '/ga4_schema.php';
 
 use Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient;
 use Google\Analytics\Data\V1beta\DateRange;
@@ -186,6 +187,62 @@ function ga4_run_report_request_from_array(array $request): RunReportRequest
 function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, array $logCtx): array
 {
     try {
+        // Centralized GA4 schema validation/mapping (property metadata cached 24h).
+        $property = isset($request['property']) ? (string)$request['property'] : '';
+        $propertyId = '';
+        if ($property !== '' && preg_match('~properties/(\d+)~', $property, $m) === 1) {
+            $propertyId = (string)$m[1];
+        }
+
+        if ($propertyId !== '') {
+            $metricNames = [];
+            foreach ((array)($request['metrics'] ?? []) as $mx) {
+                if ($mx instanceof Metric && method_exists($mx, 'getName')) {
+                    $metricNames[] = (string)$mx->getName();
+                } elseif (is_string($mx)) {
+                    $metricNames[] = $mx;
+                } elseif (is_array($mx) && isset($mx['name'])) {
+                    $metricNames[] = (string)$mx['name'];
+                }
+            }
+
+            $dimensionNames = [];
+            foreach ((array)($request['dimensions'] ?? []) as $dx) {
+                if ($dx instanceof Dimension && method_exists($dx, 'getName')) {
+                    $dimensionNames[] = (string)$dx->getName();
+                } elseif (is_string($dx)) {
+                    $dimensionNames[] = $dx;
+                } elseif (is_array($dx) && isset($dx['name'])) {
+                    $dimensionNames[] = (string)$dx['name'];
+                }
+            }
+
+            $mapped = ga4_map_and_validate_fields($propertyId, $metricNames, $dimensionNames, $logCtx);
+            if (is_array($mapped['metrics'] ?? null)) {
+                $request['metrics'] = (array)$mapped['metrics'];
+            }
+            if (is_array($mapped['dimensions'] ?? null)) {
+                $request['dimensions'] = (array)$mapped['dimensions'];
+            }
+
+            if (empty($request['metrics'])) {
+                log_error('GA4 report blocked: no valid metrics after validation', [
+                    'propertyId' => $propertyId,
+                    'ctx' => $logCtx,
+                ]);
+                return ['ok' => false, 'error' => 'GA4 report blocked: no valid metrics after validation'];
+            }
+
+            // If we had to fall back to eventCount for purchases, apply eventName == "purchase" filter.
+            if (($mapped['needs_purchase_event_filter'] ?? false) === true) {
+                $purchaseFilter = ga4_string_filter('eventName', MatchType::EXACT, 'purchase', false);
+                $existing = (isset($request['dimension_filter']) && $request['dimension_filter'] instanceof FilterExpression)
+                    ? $request['dimension_filter']
+                    : null;
+                $request['dimension_filter'] = ga4_and_filters([$existing, $purchaseFilter]);
+            }
+        }
+
         $req = ga4_run_report_request_from_array($request);
         $resp = $client->runReport($req);
         return ['ok' => true, 'response' => $resp];
@@ -218,7 +275,8 @@ function ga4_try_channel_group_dimension(
     array $dateRanges,
     array $metrics
 ): array {
-    $dimCandidates = ['sessionDefaultChannelGroup', 'sessionChannelGroup', 'defaultChannelGroup'];
+    // Use GA4 Data API v1 schema names (prefer defaultChannelGroup).
+    $dimCandidates = ['defaultChannelGroup', 'sessionDefaultChannelGroup'];
     foreach ($dimCandidates as $dim) {
         $req = [
             'property' => $property,
@@ -229,7 +287,13 @@ function ga4_try_channel_group_dimension(
         ];
         $res = ga4_run_report_safe($client, $req, ['kind' => 'totals_by_channel_group', 'dimension' => $dim]);
         if ($res['ok']) {
-            return ['ok' => true, 'dimension' => $dim, 'response' => $res['response']];
+            $resp = $res['response'];
+            $usedDim = $dim;
+            $dhs = $resp->getDimensionHeaders();
+            if (count($dhs) > 0) {
+                $usedDim = (string)$dhs[0]->getName();
+            }
+            return ['ok' => true, 'dimension' => $usedDim, 'response' => $resp];
         }
     }
     return ['ok' => false, 'error' => 'No channel group dimension worked'];
@@ -266,7 +330,7 @@ function ga4_fetch_totals_all(
         new Metric(['name' => 'screenPageViewsPerSession']),
     ];
     if ($includeSales) {
-        $baseMetrics[] = new Metric(['name' => 'purchases']);
+        $baseMetrics[] = new Metric(['name' => 'transactions']);
         $baseMetrics[] = new Metric(['name' => 'totalRevenue']);
     }
 
@@ -289,7 +353,7 @@ function ga4_fetch_totals_all(
             new Metric(['name' => 'screenPageViews']),
         ];
         if ($includeSales) {
-            $metrics[] = new Metric(['name' => 'purchases']);
+            $metrics[] = new Metric(['name' => 'transactions']);
             $metrics[] = new Metric(['name' => 'totalRevenue']);
         }
         $req['metrics'] = $metrics;
@@ -299,18 +363,16 @@ function ga4_fetch_totals_all(
         return $res;
     }
 
-    $rows = $res['response']->getRows();
+    $resp = $res['response'];
+    $rows = $resp->getRows();
     if (count($rows) < 1) {
         return ['ok' => true, 'used_pageviews_fallback' => $usedPageViewsFallback, 'this' => [], 'last' => []];
     }
     $row = $rows[0];
     $rangesCount = 2;
-    $names = $usedPageViewsFallback
-        ? ['totalUsers', 'newUsers', 'sessions', 'engagementRate', 'averageSessionDuration', 'screenPageViews']
-        : ['totalUsers', 'newUsers', 'sessions', 'engagementRate', 'averageSessionDuration', 'screenPageViewsPerSession'];
-    if ($includeSales) {
-        $names[] = 'purchases';
-        $names[] = 'totalRevenue';
+    $names = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $names[] = (string)$mh->getName();
     }
 
     $outThis = [];
@@ -319,15 +381,22 @@ function ga4_fetch_totals_all(
         $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
         $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
     }
+    // Back-compat contract: keep "purchases" key expected by report generator/UI.
+    if ($includeSales && array_key_exists('transactions', $outThis)) {
+        $outThis['purchases'] = $outThis['transactions'];
+        $outLast['purchases'] = $outLast['transactions'] ?? '0';
+    }
 
-    // Compute pages/session if we used screenPageViews fallback.
-    if ($usedPageViewsFallback) {
+    // Compute pages/session if we used screenPageViews fallback, or if GA4 omitted screenPageViewsPerSession.
+    if ($usedPageViewsFallback || !array_key_exists('screenPageViewsPerSession', $outThis)) {
         $sessThis = max(0.0, ga4_parse_float($outThis['sessions'] ?? '0', 0.0));
         $sessLast = max(0.0, ga4_parse_float($outLast['sessions'] ?? '0', 0.0));
         $pvThis = max(0.0, ga4_parse_float($outThis['screenPageViews'] ?? '0', 0.0));
         $pvLast = max(0.0, ga4_parse_float($outLast['screenPageViews'] ?? '0', 0.0));
-        $outThis['screenPageViewsPerSession'] = (string)($sessThis > 0 ? ($pvThis / $sessThis) : 0.0);
-        $outLast['screenPageViewsPerSession'] = (string)($sessLast > 0 ? ($pvLast / $sessLast) : 0.0);
+        if ($pvThis > 0 || $pvLast > 0) {
+            $outThis['screenPageViewsPerSession'] = (string)($sessThis > 0 ? ($pvThis / $sessThis) : 0.0);
+            $outLast['screenPageViewsPerSession'] = (string)($sessLast > 0 ? ($pvLast / $sessLast) : 0.0);
+        }
     }
 
     return [
@@ -369,7 +438,7 @@ function ga4_fetch_totals_by_channel_group(
         new Metric(['name' => 'screenPageViewsPerSession']),
     ];
     if ($includeSales) {
-        $metrics[] = new Metric(['name' => 'purchases']);
+        $metrics[] = new Metric(['name' => 'transactions']);
         $metrics[] = new Metric(['name' => 'totalRevenue']);
     }
 
@@ -399,10 +468,9 @@ function ga4_fetch_totals_by_channel_group(
     // (Only when previous attempt failed; here it didn't.)
 
     $rangesCount = 2;
-    $names = ['totalUsers', 'newUsers', 'sessions', 'engagementRate', 'averageSessionDuration', 'screenPageViewsPerSession'];
-    if ($includeSales) {
-        $names[] = 'purchases';
-        $names[] = 'totalRevenue';
+    $names = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $names[] = (string)$mh->getName();
     }
 
     $by = [];
@@ -418,6 +486,18 @@ function ga4_fetch_totals_by_channel_group(
         foreach ($names as $i => $metricName) {
             $thisVals[$metricName] = ga4_row_metric_value($r, $i, 0, $rangesCount);
             $lastVals[$metricName] = ga4_row_metric_value($r, $i, 1, $rangesCount);
+        }
+        if (!array_key_exists('screenPageViewsPerSession', $thisVals) && array_key_exists('screenPageViews', $thisVals)) {
+            $sessThis = max(0.0, ga4_parse_float($thisVals['sessions'] ?? '0', 0.0));
+            $sessLast = max(0.0, ga4_parse_float($lastVals['sessions'] ?? '0', 0.0));
+            $pvThis = max(0.0, ga4_parse_float($thisVals['screenPageViews'] ?? '0', 0.0));
+            $pvLast = max(0.0, ga4_parse_float($lastVals['screenPageViews'] ?? '0', 0.0));
+            $thisVals['screenPageViewsPerSession'] = (string)($sessThis > 0 ? ($pvThis / $sessThis) : 0.0);
+            $lastVals['screenPageViewsPerSession'] = (string)($sessLast > 0 ? ($pvLast / $sessLast) : 0.0);
+        }
+        if ($includeSales && array_key_exists('transactions', $thisVals)) {
+            $thisVals['purchases'] = $thisVals['transactions'];
+            $lastVals['purchases'] = $lastVals['transactions'] ?? '0';
         }
         $by[$group] = ['this' => $thisVals, 'last' => $lastVals];
     }
@@ -466,13 +546,30 @@ function ga4_fetch_timeseries_all(
     }
 
     $out = [];
-    foreach ($res['response']->getRows() as $r) {
+    $resp = $res['response'];
+    $dimNames = [];
+    foreach ($resp->getDimensionHeaders() as $dh) {
+        $dimNames[] = (string)$dh->getName();
+    }
+    $metricNames = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $metricNames[] = (string)$mh->getName();
+    }
+    foreach ($resp->getRows() as $r) {
+        $dims = [];
         $dvs = $r->getDimensionValues();
-        $dateRaw = count($dvs) > 0 ? (string)$dvs[0]->getValue() : '';
-        $mvs = $r->getMetricValues();
-        $users = count($mvs) > 0 ? (string)$mvs[0]->getValue() : '0';
-        $eng = count($mvs) > 1 ? (string)$mvs[1]->getValue() : '0';
-        $rev = $includeSales && count($mvs) > 2 ? (string)$mvs[2]->getValue() : '0';
+        foreach ($dimNames as $i => $n) {
+            $dims[$n] = ($i >= 0 && $i < count($dvs)) ? (string)$dvs[$i]->getValue() : '';
+        }
+        $mets = [];
+        foreach ($metricNames as $i => $n) {
+            $mets[$n] = ga4_row_metric_value($r, $i, 0, 1);
+        }
+
+        $dateRaw = (string)($dims['date'] ?? '');
+        $users = (string)($mets['totalUsers'] ?? '0');
+        $eng = (string)($mets['engagementRate'] ?? '0');
+        $rev = (string)($mets['totalRevenue'] ?? '0');
         $out[] = [
             'date' => ga4_format_date_yyyymmdd($dateRaw),
             'users' => ga4_parse_int($users, 0),
@@ -533,18 +630,43 @@ function ga4_fetch_timeseries_by_channel_group(
     }
 
     $out = [];
-    foreach ($res['response']->getRows() as $r) {
+    $resp = $res['response'];
+    $dimNames = [];
+    foreach ($resp->getDimensionHeaders() as $dh) {
+        $dimNames[] = (string)$dh->getName();
+    }
+    $metricNames = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $metricNames[] = (string)$mh->getName();
+    }
+    foreach ($resp->getRows() as $r) {
+        $dims = [];
         $dvs = $r->getDimensionValues();
-        $dateRaw = count($dvs) > 0 ? (string)$dvs[0]->getValue() : '';
-        $group = count($dvs) > 1 ? (string)$dvs[1]->getValue() : '';
-        $group = trim($group);
+        foreach ($dimNames as $i => $n) {
+            $dims[$n] = ($i >= 0 && $i < count($dvs)) ? (string)$dvs[$i]->getValue() : '';
+        }
+        $mets = [];
+        foreach ($metricNames as $i => $n) {
+            $mets[$n] = ga4_row_metric_value($r, $i, 0, 1);
+        }
+
+        $dateRaw = (string)($dims['date'] ?? '');
+        $groupRaw = '';
+        foreach ($dims as $k => $v) {
+            if ($k === 'date') {
+                continue;
+            }
+            $groupRaw = (string)$v;
+            break;
+        }
+        $group = trim($groupRaw);
         if ($group === '') {
             $group = '(not set)';
         }
-        $mvs = $r->getMetricValues();
-        $users = count($mvs) > 0 ? (string)$mvs[0]->getValue() : '0';
-        $eng = count($mvs) > 1 ? (string)$mvs[1]->getValue() : '0';
-        $rev = $includeSales && count($mvs) > 2 ? (string)$mvs[2]->getValue() : '0';
+
+        $users = (string)($mets['totalUsers'] ?? '0');
+        $eng = (string)($mets['engagementRate'] ?? '0');
+        $rev = (string)($mets['totalRevenue'] ?? '0');
 
         $out[] = [
             'date' => ga4_format_date_yyyymmdd($dateRaw),
@@ -573,7 +695,7 @@ function ga4_segment_channel_group_name(string $trafficKey): ?string
 
 function ga4_segment_fallback_regex(string $trafficKey): ?string
 {
-    // Fallback patterns for sessionSourceMedium when sessionDefaultChannelGroup is unavailable.
+    // Fallback patterns for sessionSourceMedium when defaultChannelGroup is unavailable.
     // Keep them conservative to avoid cross-channel leakage.
     return match ($trafficKey) {
         'seo' => ' / organic',
@@ -595,7 +717,7 @@ function ga4_segment_dimension_filter(string $trafficKey, bool $preferChannelGro
     if ($preferChannelGroup) {
         $channelName = ga4_segment_channel_group_name($trafficKey);
         if ($channelName !== null) {
-            return ga4_string_filter('sessionDefaultChannelGroup', MatchType::EXACT, $channelName, false);
+            return ga4_string_filter('defaultChannelGroup', MatchType::EXACT, $channelName, false);
         }
     }
 
@@ -644,7 +766,7 @@ function ga4_fetch_totals_for_segment(
         new Metric(['name' => 'screenPageViewsPerSession']),
     ];
     if ($includeSales) {
-        $metrics[] = new Metric(['name' => 'purchases']);
+        $metrics[] = new Metric(['name' => 'transactions']);
         $metrics[] = new Metric(['name' => 'totalRevenue']);
     }
 
@@ -671,7 +793,7 @@ function ga4_fetch_totals_for_segment(
             new Metric(['name' => 'screenPageViews']),
         ];
         if ($includeSales) {
-            $metrics[] = new Metric(['name' => 'purchases']);
+            $metrics[] = new Metric(['name' => 'transactions']);
             $metrics[] = new Metric(['name' => 'totalRevenue']);
         }
         $req['metrics'] = $metrics;
@@ -690,7 +812,8 @@ function ga4_fetch_totals_for_segment(
         return $res;
     }
 
-    $rows = $res['response']->getRows();
+    $resp = $res['response'];
+    $rows = $resp->getRows();
     if (count($rows) < 1) {
         return [
             'ok' => true,
@@ -703,13 +826,9 @@ function ga4_fetch_totals_for_segment(
 
     $row = $rows[0];
     $rangesCount = 2;
-
-    $names = $usedPageViewsFallback
-        ? ['totalUsers', 'newUsers', 'sessions', 'engagementRate', 'averageSessionDuration', 'screenPageViews']
-        : ['totalUsers', 'newUsers', 'sessions', 'engagementRate', 'averageSessionDuration', 'screenPageViewsPerSession'];
-    if ($includeSales) {
-        $names[] = 'purchases';
-        $names[] = 'totalRevenue';
+    $names = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $names[] = (string)$mh->getName();
     }
 
     $outThis = [];
@@ -718,13 +837,19 @@ function ga4_fetch_totals_for_segment(
         $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
         $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
     }
-    if ($usedPageViewsFallback) {
+    if ($includeSales && array_key_exists('transactions', $outThis)) {
+        $outThis['purchases'] = $outThis['transactions'];
+        $outLast['purchases'] = $outLast['transactions'] ?? '0';
+    }
+    if ($usedPageViewsFallback || !array_key_exists('screenPageViewsPerSession', $outThis)) {
         $sessThis = max(0.0, ga4_parse_float($outThis['sessions'] ?? '0', 0.0));
         $sessLast = max(0.0, ga4_parse_float($outLast['sessions'] ?? '0', 0.0));
         $pvThis = max(0.0, ga4_parse_float($outThis['screenPageViews'] ?? '0', 0.0));
         $pvLast = max(0.0, ga4_parse_float($outLast['screenPageViews'] ?? '0', 0.0));
-        $outThis['screenPageViewsPerSession'] = (string)($sessThis > 0 ? ($pvThis / $sessThis) : 0.0);
-        $outLast['screenPageViewsPerSession'] = (string)($sessLast > 0 ? ($pvLast / $sessLast) : 0.0);
+        if ($pvThis > 0 || $pvLast > 0) {
+            $outThis['screenPageViewsPerSession'] = (string)($sessThis > 0 ? ($pvThis / $sessThis) : 0.0);
+            $outLast['screenPageViewsPerSession'] = (string)($sessLast > 0 ? ($pvLast / $sessLast) : 0.0);
+        }
     }
 
     return [
@@ -788,13 +913,30 @@ function ga4_fetch_timeseries_for_segment(
     }
 
     $out = [];
-    foreach ($res['response']->getRows() as $r) {
+    $resp = $res['response'];
+    $dimNames = [];
+    foreach ($resp->getDimensionHeaders() as $dh) {
+        $dimNames[] = (string)$dh->getName();
+    }
+    $metricNames = [];
+    foreach ($resp->getMetricHeaders() as $mh) {
+        $metricNames[] = (string)$mh->getName();
+    }
+    foreach ($resp->getRows() as $r) {
+        $dims = [];
         $dvs = $r->getDimensionValues();
-        $dateRaw = count($dvs) > 0 ? (string)$dvs[0]->getValue() : '';
-        $mvs = $r->getMetricValues();
-        $users = count($mvs) > 0 ? (string)$mvs[0]->getValue() : '0';
-        $eng = count($mvs) > 1 ? (string)$mvs[1]->getValue() : '0';
-        $rev = $includeSales && count($mvs) > 2 ? (string)$mvs[2]->getValue() : '0';
+        foreach ($dimNames as $i => $n) {
+            $dims[$n] = ($i >= 0 && $i < count($dvs)) ? (string)$dvs[$i]->getValue() : '';
+        }
+        $mets = [];
+        foreach ($metricNames as $i => $n) {
+            $mets[$n] = ga4_row_metric_value($r, $i, 0, 1);
+        }
+
+        $dateRaw = (string)($dims['date'] ?? '');
+        $users = (string)($mets['totalUsers'] ?? '0');
+        $eng = (string)($mets['engagementRate'] ?? '0');
+        $rev = (string)($mets['totalRevenue'] ?? '0');
         $out[] = [
             'date' => ga4_format_date_yyyymmdd($dateRaw),
             'users' => ga4_parse_int($users, 0),

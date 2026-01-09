@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/google_auth.php';
 require_once __DIR__ . '/ga4_requirements.php';
+require_once __DIR__ . '/ga4_schema.php';
 
 const GA4_SCOPE_READONLY = 'https://www.googleapis.com/auth/analytics.readonly';
 
@@ -99,6 +100,41 @@ function ga4_run_report(
         return $tok;
     }
     $accessToken = (string)$tok['access_token'];
+
+    // Validate/map requested fields using GA4 property metadata (cached).
+    $mapped = ga4_map_and_validate_fields($propertyId, $metrics, $dimensions, ['kind' => 'raw_run_report']);
+    $metrics = is_array($mapped['metrics'] ?? null) ? (array)$mapped['metrics'] : $metrics;
+    $dimensions = is_array($mapped['dimensions'] ?? null) ? (array)$mapped['dimensions'] : $dimensions;
+    if (($mapped['needs_purchase_event_filter'] ?? false) === true) {
+        $purchaseFilter = [
+            'filter' => [
+                'fieldName' => 'eventName',
+                'stringFilter' => [
+                    'matchType' => 'EXACT',
+                    'value' => 'purchase',
+                    'caseSensitive' => false,
+                ],
+            ],
+        ];
+        if (is_array($dimensionFilter)) {
+            $dimensionFilter = [
+                'andGroup' => [
+                    'expressions' => [$dimensionFilter, $purchaseFilter],
+                ],
+            ];
+        } else {
+            $dimensionFilter = $purchaseFilter;
+        }
+    }
+    if (!$metrics) {
+        return [
+            'ok' => false,
+            'error' => [
+                'message' => 'GA4 report has no valid metrics after schema validation.',
+                'details' => ['propertyId' => $propertyId],
+            ],
+        ];
+    }
 
     $metricObjs = array_map(fn($m) => ['name' => (string)$m], $metrics);
     $dimensionObjs = array_map(fn($d) => ['name' => (string)$d], $dimensions);
