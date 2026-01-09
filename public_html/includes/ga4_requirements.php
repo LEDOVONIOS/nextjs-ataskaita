@@ -60,7 +60,7 @@ function ga4_requirements_check(array $context = []): array
 
     require_once $autoloadPath;
 
-    $clientClass = \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient::class;
+    $clientClass = \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient::class;
     if (!class_exists($clientClass)) {
         $cached = [
             'ok' => false,

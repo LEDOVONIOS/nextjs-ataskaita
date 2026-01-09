@@ -58,7 +58,7 @@ function ga4_build_client(array $context = []): array
     }
 
     try {
-        $client = new \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient([
+        $client = new \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient([
             'credentials' => $keyPath,
         ]);
         $cached = ['ok' => true, 'client' => $client];

@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/ga4_requirements.php';
 
-use Google\Analytics\Data\V1beta\BetaAnalyticsDataClient;
+use Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient;
 use Google\Analytics\Data\V1beta\DateRange;
 use Google\Analytics\Data\V1beta\Dimension;
 use Google\Analytics\Data\V1beta\Filter;

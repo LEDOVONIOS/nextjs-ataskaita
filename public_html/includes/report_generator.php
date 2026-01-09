@@ -873,8 +873,8 @@ function generate_report_snapshot(PDO $pdo, array $project, int $year, int $mont
         }
     }
 
-    if (is_array($ga4ClientRes) && ($ga4ClientRes['ok'] ?? false) && ($ga4ClientRes['client'] ?? null) instanceof \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient) {
-        /** @var \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient $ga4Client */
+    if (is_array($ga4ClientRes) && ($ga4ClientRes['ok'] ?? false) && ($ga4ClientRes['client'] ?? null) instanceof \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient) {
+        /** @var \Google\Analytics\Data\V1beta\Client\BetaAnalyticsDataClient $ga4Client */
         $ga4Client = $ga4ClientRes['client'];
 
         // Preferred path: 1 totals query (all) + 1 totals query (by channel group) + daily series (all + by channel group).
