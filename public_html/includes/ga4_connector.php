@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/google_auth.php';
+require_once __DIR__ . '/ga4_requirements.php';
 
 const GA4_SCOPE_READONLY = 'https://www.googleapis.com/auth/analytics.readonly';
 
@@ -72,6 +73,19 @@ function ga4_run_report(
     array $dimensions = [],
     ?array $dimensionFilter = null
 ): array {
+    if (!ga4_requirements_ok([
+        'component' => 'ga4_connector',
+        'property_id' => $propertyId,
+    ])) {
+        return [
+            'ok' => false,
+            'error' => [
+                'message' => 'GA4 disabled: missing Composer vendor autoload or GA4 client library.',
+                'details' => ['propertyId' => $propertyId],
+            ],
+        ];
+    }
+
     $propertyId = trim($propertyId);
     if ($propertyId === '' || preg_match('/^\d+$/', $propertyId) !== 1) {
         return [

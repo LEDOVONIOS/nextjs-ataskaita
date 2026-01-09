@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/ga4_requirements.php';
 
 /**
  * Builds a single GA4 Analytics Data API client (service account).
@@ -10,23 +11,26 @@ require_once __DIR__ . '/logger.php';
  * - Prefer environment variable GOOGLE_SA_KEY_PATH
  * - Fall back to constant GOOGLE_SA_KEY_PATH (from includes/config.php)
  */
-function ga4_build_client(): array
+function ga4_build_client(array $context = []): array
 {
     static $cached = null;
     if (is_array($cached)) {
         return $cached;
     }
 
-    $autoload = __DIR__ . '/../vendor/autoload.php';
-    if (!is_file($autoload)) {
+    $req = ga4_requirements_check($context + ['component' => 'ga4_client']);
+    if (!($req['ok'] ?? false)) {
         $cached = [
             'ok' => false,
-            'error' => 'Missing Composer autoload at ' . $autoload,
+            'error' => 'GA4 requirements not met: ' . (string)($req['reason'] ?? 'unknown'),
         ];
-        log_error('GA4 client init failed: missing vendor autoload', ['autoload' => $autoload]);
+        log_error('GA4 disabled', [
+            'reason' => (string)($req['reason'] ?? 'unknown'),
+            'autoload' => (string)($req['autoload'] ?? ''),
+            'context' => $context,
+        ]);
         return $cached;
     }
-    require_once $autoload;
 
     $keyPath = trim((string)(getenv('GOOGLE_SA_KEY_PATH') ?: ''));
     if ($keyPath === '' && defined('GOOGLE_SA_KEY_PATH')) {

@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/helpers.php';
 require_once __DIR__ . '/includes/security.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/layout.php';
+require_once __DIR__ . '/includes/ga4_requirements.php';
 
 require_admin();
 
@@ -26,8 +27,15 @@ function ga4_req_row(string $label, bool $ok, string $details = ''): string
         . '</tr>';
 }
 
-$autoloadPath = __DIR__ . '/vendor/autoload.php';
-$autoloadOk = is_file($autoloadPath);
+$autoloadPath = (string)($_SERVER['DOCUMENT_ROOT'] ?? '') . '/vendor/autoload.php';
+$autoloadOk = is_file($autoloadPath) && is_readable($autoloadPath);
+$classOk = false;
+$className = \Google\Analytics\Data\V1beta\BetaAnalyticsDataClient::class;
+if ($autoloadOk) {
+    // Best effort: if vendor is present, load it and check class.
+    require_once $autoloadPath;
+    $classOk = class_exists($className);
+}
 
 $keyPathSource = 'GOOGLE_SA_KEY_PATH';
 $rawKeyPath = trim((string)(getenv('GOOGLE_SA_KEY_PATH') ?: ''));
@@ -64,6 +72,7 @@ render_header('GA4 Requirements');
       <tbody>
         <?php
           echo ga4_req_row('vendor/autoload.php exists', $autoloadOk, $autoloadPath);
+          echo ga4_req_row('GA4 client class exists', $classOk, $className);
           echo ga4_req_row($keyPathSource . ' file exists', $keyOk, $resolvedKeyPath !== '' ? $resolvedKeyPath : '(empty)');
         ?>
       </tbody>
