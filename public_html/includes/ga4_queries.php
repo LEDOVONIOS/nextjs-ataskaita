@@ -386,6 +386,50 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
         }
         $resp = $call['response'];
 
+        // Debug ordering for multi-dateRange totals runs (helps confirm header/value flattening).
+        if ($kind === 'totals_all' || $kind === 'totals_by_channel_group') {
+            try {
+                $dateRangesCount = max(1, count($drs));
+                $metricsCount = count($finalMetricNames);
+
+                $metricHeaderNames = [];
+                if (method_exists($resp, 'getMetricHeaders')) {
+                    foreach ($resp->getMetricHeaders() as $mh) {
+                        $metricHeaderNames[] = (string)$mh->getName();
+                    }
+                }
+
+                $rows = method_exists($resp, 'getRows') ? $resp->getRows() : [];
+                $firstRow = (is_array($rows) && count($rows) > 0 && ($rows[0] ?? null) instanceof Row) ? $rows[0] : null;
+                $metricValues = ($firstRow instanceof Row) ? $firstRow->getMetricValues() : [];
+                $metricValuesCount = is_array($metricValues) ? count($metricValues) : 0;
+
+                $pairs = [];
+                $limit = min(16, $metricValuesCount);
+                for ($i = 0; $i < $limit; $i++) {
+                    $pairs[] = [
+                        'idx' => $i,
+                        'metricHeaderName' => (string)($metricHeaderNames[$i] ?? ''),
+                        'metricValue' => (string)($metricValues[$i]->getValue() ?? ''),
+                    ];
+                }
+
+                log_info('GA4 debug totals ordering (metricHeaders/metricValues)', [
+                    'ctx' => $logCtx,
+                    'metricsCount' => $metricsCount,
+                    'dateRangesCount' => $dateRangesCount,
+                    'metricHeadersCount' => count($metricHeaderNames),
+                    'firstRowMetricValuesCount' => $metricValuesCount,
+                    'firstRowFirst16' => $pairs,
+                ]);
+            } catch (Throwable $e) {
+                log_warn('GA4 debug totals ordering failed', [
+                    'ctx' => $logCtx,
+                    'error' => (string)$e->getMessage(),
+                ]);
+            }
+        }
+
         $rawFirstTotals = null;
         if ($isSegmentTotalsRun) {
             try {
@@ -506,6 +550,133 @@ function ga4_row_metric_value(Row $row, int $metricIndex, int $rangeIndex, int $
     return (string)$mvs[$idx]->getValue();
 }
 
+function ga4_metric_names_from_metrics_list(array $metrics): array
+{
+    $out = [];
+    foreach ($metrics as $m) {
+        if ($m instanceof Metric && method_exists($m, 'getName')) {
+            $name = trim((string)$m->getName());
+            if ($name !== '') {
+                $out[] = $name;
+            }
+        } elseif (is_string($m)) {
+            $name = trim($m);
+            if ($name !== '') {
+                $out[] = $name;
+            }
+        } elseif (is_array($m) && isset($m['name'])) {
+            $name = trim((string)$m['name']);
+            if ($name !== '') {
+                $out[] = $name;
+            }
+        }
+    }
+    return array_values($out);
+}
+
+/**
+ * Parse metricValues for 2+ dateRanges without assuming metricHeaders length.
+ *
+ * GA4 may return:
+ * - metricHeaders count == metricsCount (not repeated)
+ * - metricHeaders count == metricsCount * dateRangesCount (repeated per range)
+ *
+ * metricValues are flattened by dateRange in order:
+ *  idx = dateRangeIndex * metricsCount + metricIndex
+ *
+ * NOTE: metricIndex is always the request.metrics order (0-based).
+ */
+function ga4_parse_two_ranges_from_row(
+    Row $row,
+    array $requestMetricNames,
+    int $dateRangesCount,
+    array $responseMetricHeaderNames,
+    array $logCtx
+): array {
+    $metricsCount = count($requestMetricNames);
+    $dateRangesCount = max(1, $dateRangesCount);
+
+    $mvs = $row->getMetricValues();
+    $metricValuesCount = is_array($mvs) ? count($mvs) : 0;
+    $metricHeadersCount = count($responseMetricHeaderNames);
+    $expected = $metricsCount * $dateRangesCount;
+
+    $headersMode = 'mismatch';
+    if ($metricHeadersCount === $expected) {
+        $headersMode = 'repeated_per_date_range';
+    } elseif ($metricHeadersCount === $metricsCount) {
+        $headersMode = 'per_metric';
+    }
+
+    if ($metricsCount === 0) {
+        log_error('GA4 totals parsing failed: no request metrics', [
+            'ctx' => $logCtx,
+            'dateRangesCount' => $dateRangesCount,
+            'metricHeadersCount' => $metricHeadersCount,
+            'metricValuesCount' => $metricValuesCount,
+        ]);
+        return ['ok' => false, 'error' => 'No request metrics'];
+    }
+
+    // Invariant: we need at least metricsCount * dateRangesCount metric values to read both ranges safely.
+    if ($metricValuesCount < $expected) {
+        log_error('GA4 totals parsing invariant failed: metricValues shorter than metricsCount*dateRangesCount; falling back to single-range parsing', [
+            'ctx' => $logCtx,
+            'metricsCount' => $metricsCount,
+            'dateRangesCount' => $dateRangesCount,
+            'expectedMetricValues' => $expected,
+            'metricValuesCount' => $metricValuesCount,
+            'metricHeadersCount' => $metricHeadersCount,
+            'metricHeadersMode' => $headersMode,
+            'requestMetrics' => $requestMetricNames,
+            'responseMetricHeadersFirst16' => array_slice($responseMetricHeaderNames, 0, 16),
+        ]);
+
+        $outThis = [];
+        foreach ($requestMetricNames as $metricIdx => $metricName) {
+            $idx = $metricIdx; // range 0 only
+            $outThis[$metricName] = ($idx >= 0 && $idx < $metricValuesCount) ? (string)$mvs[$idx]->getValue() : '0';
+        }
+        return [
+            'ok' => true,
+            'mode' => 'single_range_fallback',
+            'this' => $outThis,
+            'last' => [],
+        ];
+    }
+
+    // Normal multi-range parsing (0=this, 1=last).
+    $outThis = [];
+    $outLast = [];
+    foreach ($requestMetricNames as $metricIdx => $metricName) {
+        $idxThis = (0 * $metricsCount) + $metricIdx;
+        $idxLast = (1 * $metricsCount) + $metricIdx;
+        $outThis[$metricName] = (string)$mvs[$idxThis]->getValue();
+        $outLast[$metricName] = (string)$mvs[$idxLast]->getValue();
+    }
+
+    // If headers look unexpected, log once for visibility (but parsing is request-order based).
+    if ($headersMode === 'mismatch') {
+        log_warn('GA4 totals parsing: metricHeaders count does not match expected patterns; parsed using request order', [
+            'ctx' => $logCtx,
+            'metricsCount' => $metricsCount,
+            'dateRangesCount' => $dateRangesCount,
+            'expectedMetricHeaders' => [$metricsCount, $expected],
+            'metricHeadersCount' => $metricHeadersCount,
+            'metricValuesCount' => $metricValuesCount,
+            'requestMetrics' => $requestMetricNames,
+            'responseMetricHeadersFirst16' => array_slice($responseMetricHeaderNames, 0, 16),
+        ]);
+    }
+
+    return [
+        'ok' => true,
+        'mode' => $headersMode,
+        'this' => $outThis,
+        'last' => $outLast,
+    ];
+}
+
 function ga4_try_channel_group_dimension(
     BetaAnalyticsDataClient $client,
     string $property,
@@ -611,18 +782,23 @@ function ga4_fetch_totals_all(
         return ['ok' => true, 'used_pageviews_fallback' => $usedPageViewsFallback, 'this' => [], 'last' => []];
     }
     $row = $rows[0];
-    $names = [];
+    $requestMetricNames = ga4_metric_names_from_metrics_list((array)($req['metrics'] ?? []));
+    $headerNames = [];
     foreach ($resp->getMetricHeaders() as $mh) {
-        $names[] = (string)$mh->getName();
+        $headerNames[] = (string)$mh->getName();
     }
-    $metricsCount = count($names);
-
-    $outThis = [];
-    $outLast = [];
-    foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
+    $parsed = ga4_parse_two_ranges_from_row(
+        $row,
+        $requestMetricNames,
+        count($dateRanges),
+        $headerNames,
+        ['kind' => 'totals_all', 'property_id' => $propertyId]
+    );
+    if (!($parsed['ok'] ?? false)) {
+        return ['ok' => false, 'error' => (string)($parsed['error'] ?? 'Failed to parse totals')];
     }
+    $outThis = (array)($parsed['this'] ?? []);
+    $outLast = (array)($parsed['last'] ?? []);
     // Back-compat contract: keep "purchases" key expected by report generator/UI.
     if ($includeSales && array_key_exists('transactions', $outThis)) {
         $outThis['purchases'] = $outThis['transactions'];
@@ -709,18 +885,23 @@ function ga4_fetch_core_totals_two_ranges(
     }
 
     $row = $rows[0];
-    $names = [];
+    $requestMetricNames = ga4_metric_names_from_metrics_list((array)($req['metrics'] ?? []));
+    $headerNames = [];
     foreach ($resp->getMetricHeaders() as $mh) {
-        $names[] = (string)$mh->getName();
+        $headerNames[] = (string)$mh->getName();
     }
-    $metricsCount = count($names);
-
-    $outThis = [];
-    $outLast = [];
-    foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
+    $parsed = ga4_parse_two_ranges_from_row(
+        $row,
+        $requestMetricNames,
+        count($dateRanges),
+        $headerNames,
+        ['kind' => 'core_totals'] + $logCtx
+    );
+    if (!($parsed['ok'] ?? false)) {
+        return ['ok' => false, 'error' => (string)($parsed['error'] ?? 'Failed to parse core totals')];
     }
+    $outThis = (array)($parsed['this'] ?? []);
+    $outLast = (array)($parsed['last'] ?? []);
 
     return ['ok' => true, 'this' => $outThis, 'last' => $outLast];
 }
@@ -859,7 +1040,7 @@ function ga4_fetch_totals_by_channel_group(
     foreach ($resp->getMetricHeaders() as $mh) {
         $names[] = (string)$mh->getName();
     }
-    $metricsCount = count($names);
+    $requestMetricNames = ga4_metric_names_from_metrics_list($metrics);
 
     $by = [];
     foreach ($rows as $r) {
@@ -869,12 +1050,25 @@ function ga4_fetch_totals_by_channel_group(
         if ($group === '') {
             $group = '(not set)';
         }
-        $thisVals = [];
-        $lastVals = [];
-        foreach ($names as $i => $metricName) {
-            $thisVals[$metricName] = ga4_row_metric_value($r, $i, 0, $metricsCount);
-            $lastVals[$metricName] = ga4_row_metric_value($r, $i, 1, $metricsCount);
+        $parsed = ga4_parse_two_ranges_from_row(
+            $r,
+            $requestMetricNames,
+            count($dateRanges),
+            $names,
+            ['kind' => 'totals_by_channel_group', 'property_id' => $propertyId, 'group' => $group]
+        );
+        if (!($parsed['ok'] ?? false)) {
+            // Surface the error and keep this group empty; report_generator will treat missing as zero.
+            log_error('GA4 totals_by_channel_group parsing failed for row', [
+                'property_id' => $propertyId,
+                'group' => $group,
+                'error' => (string)($parsed['error'] ?? 'unknown'),
+            ]);
+            $by[$group] = ['this' => [], 'last' => []];
+            continue;
         }
+        $thisVals = (array)($parsed['this'] ?? []);
+        $lastVals = (array)($parsed['last'] ?? []);
         if (!array_key_exists('screenPageViewsPerSession', $thisVals) && array_key_exists('screenPageViews', $thisVals)) {
             $sessThis = max(0.0, ga4_parse_float($thisVals['sessions'] ?? '0', 0.0));
             $sessLast = max(0.0, ga4_parse_float($lastVals['sessions'] ?? '0', 0.0));
@@ -1282,18 +1476,23 @@ function ga4_fetch_totals_for_segment(
     }
 
     $row = $rows[0];
-    $names = [];
+    $requestMetricNames = ga4_metric_names_from_metrics_list((array)($req['metrics'] ?? []));
+    $headerNames = [];
     foreach ($resp->getMetricHeaders() as $mh) {
-        $names[] = (string)$mh->getName();
+        $headerNames[] = (string)$mh->getName();
     }
-    $metricsCount = count($names);
-
-    $outThis = [];
-    $outLast = [];
-    foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
+    $parsed = ga4_parse_two_ranges_from_row(
+        $row,
+        $requestMetricNames,
+        count($dateRanges),
+        $headerNames,
+        ['kind' => 'totals_segment', 'property_id' => $propertyId, 'trafficKey' => $trafficKey]
+    );
+    if (!($parsed['ok'] ?? false)) {
+        return ['ok' => false, 'error' => (string)($parsed['error'] ?? 'Failed to parse segment totals')];
     }
+    $outThis = (array)($parsed['this'] ?? []);
+    $outLast = (array)($parsed['last'] ?? []);
     if ($includeSales && array_key_exists('transactions', $outThis)) {
         $outThis['purchases'] = $outThis['transactions'];
         $outLast['purchases'] = $outLast['transactions'] ?? '0';
