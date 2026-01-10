@@ -5,6 +5,8 @@ require_once __DIR__ . '/mock_data.php';
 require_once __DIR__ . '/ga4_client.php';
 require_once __DIR__ . '/ga4_queries.php';
 require_once __DIR__ . '/ga4_requirements.php';
+require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/db.php';
 
 function mock_visitors_overview_to_phase2(int $projectId, int $year, int $month, array $mockVisitors): array
 {
@@ -2602,7 +2604,7 @@ function phase3_build_ppc_report(
     ];
 }
 
-function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, string $status, array $snapshot): void
+function upsert_monthly_report(PDO &$pdo, int $projectId, int $year, int $month, string $status, array $snapshot): void
 {
     $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
@@ -2612,17 +2614,20 @@ function upsert_monthly_report(PDO $pdo, int $projectId, int $year, int $month, 
     upsert_monthly_report_json($pdo, $projectId, $year, $month, $status, $json);
 }
 
-function upsert_monthly_report_error(PDO $pdo, int $projectId, int $year, int $month): void
+function upsert_monthly_report_error(PDO &$pdo, int $projectId, int $year, int $month): void
 {
     upsert_monthly_report_json($pdo, $projectId, $year, $month, 'ERROR', null);
 }
 
-function upsert_monthly_report_json(PDO $pdo, int $projectId, int $year, int $month, string $status, ?string $json): void
+function upsert_monthly_report_json(PDO &$pdo, int $projectId, int $year, int $month, string $status, ?string $json): void
 {
     $allowed = ['READY', 'PARTIAL', 'GENERATING', 'ERROR'];
     if (!in_array($status, $allowed, true)) {
         $status = 'READY';
     }
+
+    $jsonLen = is_string($json) ? strlen($json) : 0;
+    $reconnected = false;
 
     // Insert-or-update by unique key (project_id, year, month).
     $sql = "
@@ -2633,8 +2638,8 @@ function upsert_monthly_report_json(PDO $pdo, int $projectId, int $year, int $mo
           generated_at = UTC_TIMESTAMP(),
           data_json = :json2
     ";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
+
+    $params = [
         ':pid' => $projectId,
         ':y' => $year,
         ':m' => $month,
@@ -2642,5 +2647,79 @@ function upsert_monthly_report_json(PDO $pdo, int $projectId, int $year, int $mo
         ':json' => $json,
         ':status2' => $status,
         ':json2' => $json,
-    ]);
+    ];
+
+    $attempt = 0;
+    while (true) {
+        $attempt++;
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            if ($reconnected) {
+                log_info('Monthly report upsert succeeded after reconnect', [
+                    'project_id' => $projectId,
+                    'year' => $year,
+                    'month' => $month,
+                    'status' => $status,
+                    'jsonLen' => $jsonLen,
+                    'attempt' => $attempt,
+                    'reconnected' => true,
+                ]);
+            }
+            return;
+        } catch (Throwable $e) {
+            $msg = strtolower((string)$e->getMessage());
+            $isGoneAwayMsg = (strpos($msg, 'server has gone away') !== false);
+            $isErr2006 = false;
+            $errInfo = null;
+            if ($e instanceof PDOException) {
+                $errInfo = $e->errorInfo ?? null;
+                if (is_array($errInfo) && isset($errInfo[1]) && (int)$errInfo[1] === 2006) {
+                    $isErr2006 = true;
+                }
+            }
+            if (!$isErr2006) {
+                // Some environments embed "2006" in the message.
+                $isErr2006 = (strpos($msg, ' 2006 ') !== false) || (strpos($msg, ': 2006') !== false) || (preg_match('/\b2006\b/', $msg) === 1);
+            }
+
+            $shouldReconnect = (!$reconnected && $attempt === 1 && ($isGoneAwayMsg || $isErr2006));
+            if ($shouldReconnect) {
+                $reconnected = true;
+                log_warn('MySQL server has gone away; reconnecting and retrying monthly report upsert', [
+                    'project_id' => $projectId,
+                    'year' => $year,
+                    'month' => $month,
+                    'status' => $status,
+                    'jsonLen' => $jsonLen,
+                    'attempt' => $attempt,
+                    'reconnected' => true,
+                    'error' => $e->getMessage(),
+                    'error_code' => (string)$e->getCode(),
+                    'error_info' => $errInfo,
+                ]);
+
+                // Drop cached PDO and recreate.
+                db_close();
+                $pdo = db();
+
+                // Retry exactly once.
+                continue;
+            }
+
+            log_error('Monthly report upsert failed (aborting)', [
+                'project_id' => $projectId,
+                'year' => $year,
+                'month' => $month,
+                'status' => $status,
+                'jsonLen' => $jsonLen,
+                'attempt' => $attempt,
+                'reconnected' => $reconnected,
+                'error' => $e->getMessage(),
+                'error_code' => (string)$e->getCode(),
+                'error_info' => $errInfo,
+            ]);
+            throw $e;
+        }
+    }
 }
