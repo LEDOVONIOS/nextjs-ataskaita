@@ -389,7 +389,8 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
         $rawFirstTotals = null;
         if ($isSegmentTotalsRun) {
             try {
-                $rangesCount = max(1, count($drs));
+                $dateRangesCount = max(1, count($drs));
+                $metricsCount = count($finalMetricNames);
                 $row = null;
                 if (method_exists($resp, 'getTotals')) {
                     $totals = $resp->getTotals();
@@ -406,23 +407,22 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
 
                 if ($row instanceof Row) {
                     $mvs = $row->getMetricValues();
-                    $rawList = [];
-                    for ($idx = 0; $idx < count($mvs); $idx++) {
-                        $val = (string)$mvs[$idx]->getValue();
-                        $metricIdx = $rangesCount > 0 ? (int)floor($idx / $rangesCount) : 0;
-                        $rangeIdx = $rangesCount > 0 ? ($idx % $rangesCount) : 0;
-                        $metricName = ($metricIdx >= 0 && $metricIdx < count($finalMetricNames)) ? (string)$finalMetricNames[$metricIdx] : '';
-                        $rawList[] = [
-                            'idx' => $idx,
-                            'metric' => $metricName,
-                            'range_idx' => $rangeIdx,
-                            'range' => ($rangeIdx === 0 ? 'this' : ($rangeIdx === 1 ? 'last' : ('range_' . $rangeIdx))),
-                            'value' => $val,
-                        ];
+                    $valuesLen = count($mvs);
+                    $byRange = [];
+                    for ($rangeIdx = 0; $rangeIdx < $dateRangesCount; $rangeIdx++) {
+                        $perRange = [];
+                        for ($metricIdx = 0; $metricIdx < $metricsCount; $metricIdx++) {
+                            $metricName = (string)($finalMetricNames[$metricIdx] ?? ('metric_' . $metricIdx));
+                            $flatIdx = ($rangeIdx * $metricsCount) + $metricIdx;
+                            $perRange[$metricName] = ($flatIdx >= 0 && $flatIdx < $valuesLen) ? (string)$mvs[$flatIdx]->getValue() : '0';
+                        }
+                        $byRange[$rangeIdx] = $perRange;
                     }
                     $rawFirstTotals = [
-                        'ranges_count' => $rangesCount,
-                        'metric_values' => $rawList,
+                        'metrics_count' => $metricsCount,
+                        'date_ranges_count' => $dateRangesCount,
+                        'metric_values_len' => $valuesLen,
+                        'by_range' => $byRange,
                     ];
                     log_info('GA4 segment totals runReport raw metricValues (first totals row)', [
                         'ctx' => $logCtx,
@@ -494,11 +494,11 @@ function ga4_smoke_test(BetaAnalyticsDataClient $client, string $propertyId): ar
 
 /**
  * For multiple dateRanges, GA4 returns metric values ordered by:
- * metric[0]/range[0], metric[0]/range[1], ..., metric[1]/range[0], metric[1]/range[1], ...
+ * range[0]/metric[0..N-1], range[1]/metric[0..N-1], ...
  */
-function ga4_row_metric_value(Row $row, int $metricIndex, int $rangeIndex, int $rangesCount): string
+function ga4_row_metric_value(Row $row, int $metricIndex, int $rangeIndex, int $metricsCount): string
 {
-    $idx = ($metricIndex * $rangesCount) + $rangeIndex;
+    $idx = ($rangeIndex * $metricsCount) + $metricIndex;
     $mvs = $row->getMetricValues();
     if ($idx < 0 || $idx >= count($mvs)) {
         return '0';
@@ -611,17 +611,17 @@ function ga4_fetch_totals_all(
         return ['ok' => true, 'used_pageviews_fallback' => $usedPageViewsFallback, 'this' => [], 'last' => []];
     }
     $row = $rows[0];
-    $rangesCount = 2;
     $names = [];
     foreach ($resp->getMetricHeaders() as $mh) {
         $names[] = (string)$mh->getName();
     }
+    $metricsCount = count($names);
 
     $outThis = [];
     $outLast = [];
     foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
+        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
+        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
     }
     // Back-compat contract: keep "purchases" key expected by report generator/UI.
     if ($includeSales && array_key_exists('transactions', $outThis)) {
@@ -709,17 +709,17 @@ function ga4_fetch_core_totals_two_ranges(
     }
 
     $row = $rows[0];
-    $rangesCount = 2;
     $names = [];
     foreach ($resp->getMetricHeaders() as $mh) {
         $names[] = (string)$mh->getName();
     }
+    $metricsCount = count($names);
 
     $outThis = [];
     $outLast = [];
     foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
+        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
+        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
     }
 
     return ['ok' => true, 'this' => $outThis, 'last' => $outLast];
@@ -855,11 +855,11 @@ function ga4_fetch_totals_by_channel_group(
     // We detect "screenPageViewsPerSession" issues by doing a lightweight retry if needed:
     // (Only when previous attempt failed; here it didn't.)
 
-    $rangesCount = 2;
     $names = [];
     foreach ($resp->getMetricHeaders() as $mh) {
         $names[] = (string)$mh->getName();
     }
+    $metricsCount = count($names);
 
     $by = [];
     foreach ($rows as $r) {
@@ -872,8 +872,8 @@ function ga4_fetch_totals_by_channel_group(
         $thisVals = [];
         $lastVals = [];
         foreach ($names as $i => $metricName) {
-            $thisVals[$metricName] = ga4_row_metric_value($r, $i, 0, $rangesCount);
-            $lastVals[$metricName] = ga4_row_metric_value($r, $i, 1, $rangesCount);
+            $thisVals[$metricName] = ga4_row_metric_value($r, $i, 0, $metricsCount);
+            $lastVals[$metricName] = ga4_row_metric_value($r, $i, 1, $metricsCount);
         }
         if (!array_key_exists('screenPageViewsPerSession', $thisVals) && array_key_exists('screenPageViews', $thisVals)) {
             $sessThis = max(0.0, ga4_parse_float($thisVals['sessions'] ?? '0', 0.0));
@@ -1282,17 +1282,17 @@ function ga4_fetch_totals_for_segment(
     }
 
     $row = $rows[0];
-    $rangesCount = 2;
     $names = [];
     foreach ($resp->getMetricHeaders() as $mh) {
         $names[] = (string)$mh->getName();
     }
+    $metricsCount = count($names);
 
     $outThis = [];
     $outLast = [];
     foreach ($names as $i => $metricName) {
-        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $rangesCount);
-        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $rangesCount);
+        $outThis[$metricName] = ga4_row_metric_value($row, $i, 0, $metricsCount);
+        $outLast[$metricName] = ga4_row_metric_value($row, $i, 1, $metricsCount);
     }
     if ($includeSales && array_key_exists('transactions', $outThis)) {
         $outThis['purchases'] = $outThis['transactions'];
