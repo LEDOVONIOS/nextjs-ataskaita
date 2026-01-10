@@ -248,6 +248,8 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
             $propertyId = (string)$m[1];
         }
 
+        $kind = (string)($logCtx['kind'] ?? '');
+
         if ($propertyId !== '') {
             $metricNames = [];
             foreach ((array)($request['metrics'] ?? []) as $mx) {
@@ -297,11 +299,152 @@ function ga4_run_report_safe(BetaAnalyticsDataClient $client, array $request, ar
             }
         }
 
+        $isSegmentTotalsRun = ($kind === 'core_totals' || str_starts_with($kind, 'totals_'));
+        $finalMetricNames = [];
+        foreach ((array)($request['metrics'] ?? []) as $mx) {
+            if ($mx instanceof Metric && method_exists($mx, 'getName')) {
+                $finalMetricNames[] = (string)$mx->getName();
+            } elseif (is_string($mx) && trim($mx) !== '') {
+                $finalMetricNames[] = trim($mx);
+            } elseif (is_array($mx) && isset($mx['name']) && is_string($mx['name']) && trim($mx['name']) !== '') {
+                $finalMetricNames[] = trim((string)$mx['name']);
+            }
+        }
+        $finalDimensionNames = [];
+        foreach ((array)($request['dimensions'] ?? []) as $dx) {
+            if ($dx instanceof Dimension && method_exists($dx, 'getName')) {
+                $finalDimensionNames[] = (string)$dx->getName();
+            } elseif (is_string($dx) && trim($dx) !== '') {
+                $finalDimensionNames[] = trim($dx);
+            } elseif (is_array($dx) && isset($dx['name']) && is_string($dx['name']) && trim($dx['name']) !== '') {
+                $finalDimensionNames[] = trim((string)$dx['name']);
+            }
+        }
+
+        $dateRangesSummary = [];
+        $drs = (array)($request['date_ranges'] ?? []);
+        foreach ($drs as $i => $dr) {
+            if ($dr instanceof DateRange) {
+                $dateRangesSummary[] = [
+                    'idx' => (int)$i,
+                    'startDate' => method_exists($dr, 'getStartDate') ? (string)$dr->getStartDate() : '',
+                    'endDate' => method_exists($dr, 'getEndDate') ? (string)$dr->getEndDate() : '',
+                ];
+            } elseif (is_array($dr)) {
+                $dateRangesSummary[] = [
+                    'idx' => (int)$i,
+                    'startDate' => (string)($dr['start_date'] ?? $dr['startDate'] ?? ''),
+                    'endDate' => (string)($dr['end_date'] ?? $dr['endDate'] ?? ''),
+                ];
+            }
+        }
+        $dateRangesThisLast = [
+            'this' => [
+                'startDate' => (string)($dateRangesSummary[0]['startDate'] ?? ''),
+                'endDate' => (string)($dateRangesSummary[0]['endDate'] ?? ''),
+            ],
+            'last' => [
+                'startDate' => (string)($dateRangesSummary[1]['startDate'] ?? ''),
+                'endDate' => (string)($dateRangesSummary[1]['endDate'] ?? ''),
+            ],
+        ];
+
+        $filterSummary = null;
+        if (isset($request['dimension_filter']) && $request['dimension_filter'] instanceof FilterExpression) {
+            $f = $request['dimension_filter'];
+            if (method_exists($f, 'serializeToJsonString')) {
+                try {
+                    $filterSummary = (string)$f->serializeToJsonString();
+                } catch (Throwable $e) {
+                    $filterSummary = ['class' => get_class($f)];
+                }
+            } else {
+                $filterSummary = ['class' => get_class($f)];
+            }
+        }
+
+        $requestMeta = [
+            'property_id' => $propertyId,
+            'dateRanges' => $dateRangesSummary,
+            'dateRanges_this_last' => $dateRangesThisLast,
+            'metrics' => $finalMetricNames,
+            'dimensions' => $finalDimensionNames,
+            'has_filter' => (isset($request['dimension_filter']) && $request['dimension_filter'] instanceof FilterExpression),
+            'filter' => $filterSummary,
+        ];
+
+        if ($isSegmentTotalsRun) {
+            log_info('GA4 segment totals runReport request', [
+                'ctx' => $logCtx,
+                'request' => $requestMeta,
+            ]);
+        }
+
         $call = ga4_run_report_request($client, $request, $logCtx);
         if (!($call['ok'] ?? false)) {
             return $call;
         }
-        return ['ok' => true, 'response' => $call['response']];
+        $resp = $call['response'];
+
+        $rawFirstTotals = null;
+        if ($isSegmentTotalsRun) {
+            try {
+                $rangesCount = max(1, count($drs));
+                $row = null;
+                if (method_exists($resp, 'getTotals')) {
+                    $totals = $resp->getTotals();
+                    if (is_array($totals) && count($totals) > 0 && $totals[0] instanceof Row) {
+                        $row = $totals[0];
+                    }
+                }
+                if (!($row instanceof Row) && method_exists($resp, 'getRows')) {
+                    $rows = $resp->getRows();
+                    if (is_array($rows) && count($rows) > 0 && $rows[0] instanceof Row) {
+                        $row = $rows[0];
+                    }
+                }
+
+                if ($row instanceof Row) {
+                    $mvs = $row->getMetricValues();
+                    $rawList = [];
+                    for ($idx = 0; $idx < count($mvs); $idx++) {
+                        $val = (string)$mvs[$idx]->getValue();
+                        $metricIdx = $rangesCount > 0 ? (int)floor($idx / $rangesCount) : 0;
+                        $rangeIdx = $rangesCount > 0 ? ($idx % $rangesCount) : 0;
+                        $metricName = ($metricIdx >= 0 && $metricIdx < count($finalMetricNames)) ? (string)$finalMetricNames[$metricIdx] : '';
+                        $rawList[] = [
+                            'idx' => $idx,
+                            'metric' => $metricName,
+                            'range_idx' => $rangeIdx,
+                            'range' => ($rangeIdx === 0 ? 'this' : ($rangeIdx === 1 ? 'last' : ('range_' . $rangeIdx))),
+                            'value' => $val,
+                        ];
+                    }
+                    $rawFirstTotals = [
+                        'ranges_count' => $rangesCount,
+                        'metric_values' => $rawList,
+                    ];
+                    log_info('GA4 segment totals runReport raw metricValues (first totals row)', [
+                        'ctx' => $logCtx,
+                        'request' => $requestMeta,
+                        'raw' => $rawFirstTotals,
+                    ]);
+                }
+            } catch (Throwable $e) {
+                log_warn('GA4 segment totals raw metricValues logging failed', [
+                    'ctx' => $logCtx,
+                    'request' => $requestMeta,
+                    'error' => (string)$e->getMessage(),
+                ]);
+            }
+        }
+
+        return [
+            'ok' => true,
+            'response' => $resp,
+            'request_meta' => $requestMeta,
+            'raw_first_totals' => $rawFirstTotals,
+        ];
     } catch (Throwable $e) {
         log_error('GA4 runReport failed (safe wrapper)', [
             'error' => $e->getMessage(),
